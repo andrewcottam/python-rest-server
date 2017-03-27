@@ -7,7 +7,7 @@ databases = {
 }
 
 #set the documentRoot to the relative path to the python-rest-server/htmldocs folder from the Apache html folder (if it is not set in an Apache vhost.conf file)
-documentRoot = "" 
+documentRoot = "../../../../../python-rest-server/htmldocs/" 
 
 #the title for the REST Services Directory pages
 title = "REST Services Directory "
