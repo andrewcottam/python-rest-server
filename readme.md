@@ -16,13 +16,13 @@ Installation instructions for Ubuntu 14.04 (on Cloud9):
 
 ## CONFIGURE POSTGRESQL 9.3
 Configuring Postgres which is already installed:
-$ sudo service postgresql start 
-$ sudo sudo -u postgres psql
+ $ sudo service postgresql start
+ $ sudo sudo -u postgres psql
 postgres=# \password postgres
 Enter new password: 
 Enter it again: 
 postgres=# \q
-$ sudo sudo -u postgres createuser jrc -P -s
+ $ sudo sudo -u postgres createuser jrc -P -s
 Enter password for new role: 
 Enter it again: 
 postgres=# \q
