@@ -1,0 +1,164 @@
+html, body {
+	margin: 0px;
+	font-family: Arial, Helvetica, sans-serif;
+}
+.title {
+	background: #484848; /* Old browsers */
+	background: -moz-linear-gradient(top,  #484848 0%, #2a2a2a 100%); /* FF3.6+ */
+	background: -webkit-gradient(linear, left top, left bottom, color-stop(0%,#484848), color-stop(100%,#2a2a2a)); /* Chrome,Safari4+ */
+	background: -webkit-linear-gradient(top,  #484848 0%,#2a2a2a 100%); /* Chrome10+,Safari5.1+ */
+	background: -o-linear-gradient(top,  #484848 0%,#2a2a2a 100%); /* Opera 11.10+ */
+	background: -ms-linear-gradient(top,  #484848 0%,#2a2a2a 100%); /* IE10+ */
+	background: linear-gradient(to bottom,  #484848 0%,#2a2a2a 100%); /* W3C */
+	padding: 10px 0px 10px 0px;
+	font-size: 18px;
+	color: white;
+}
+.helpDiv {
+	position: absolute;
+	right: 20px;
+	top: 10px;
+}
+.breadcrumb {
+	background: rgb(224,224,224); /* Old browsers */
+	background: -moz-linear-gradient(top,  rgba(224,224,224,1) 0%, rgba(252,252,252,1) 100%); /* FF3.6+ */
+	background: -webkit-gradient(linear, left top, left bottom, color-stop(0%,rgba(224,224,224,1)), color-stop(100%,rgba(252,252,252,1))); /* Chrome,Safari4+ */
+	background: -webkit-linear-gradient(top,  rgba(224,224,224,1) 0%,rgba(252,252,252,1) 100%); /* Chrome10+,Safari5.1+ */
+	background: -o-linear-gradient(top,  rgba(224,224,224,1) 0%,rgba(252,252,252,1) 100%); /* Opera 11.10+ */
+	background: -ms-linear-gradient(top,  rgba(224,224,224,1) 0%,rgba(252,252,252,1) 100%); /* IE10+ */
+	background: linear-gradient(to bottom,  rgba(224,224,224,1) 0%,rgba(252,252,252,1) 100%); /* W3C */
+	color: #444;
+	font-size: 15px;
+	padding: 6px 8px 6px 8px;
+	margin: 20px 20px 0px 20px;
+	border: #ccc 1px solid;
+	display: inline-block;
+}
+a {
+	color: #55a0cc;
+	text-decoration: none;
+}
+.tableHolder {
+	width: 60%;
+	margin-left: 20px;
+}
+.table, .table2 {
+	margin: 20px;
+	color: #666;
+	font-size: 14px;
+	border: #ccc 1px solid;
+	text-align: left;
+	width: 65%;
+}
+.table2 {
+	margin: 0px 20px 20px 0px;
+}
+th {
+	padding: 6px 8px 6px 8px;
+	font-weight: normal;
+	border-bottom: 1px solid #e0e0e0;
+	background: rgb(224,224,224); /* Old browsers */
+	background: -moz-linear-gradient(top,  rgba(224,224,224,1) 0%, rgba(252,252,252,1) 100%); /* FF3.6+ */
+	background: -webkit-gradient(linear, left top, left bottom, color-stop(0%,rgba(224,224,224,1)), color-stop(100%,rgba(252,252,252,1))); /* Chrome,Safari4+ */
+	background: -webkit-linear-gradient(top,  rgba(224,224,224,1) 0%,rgba(252,252,252,1) 100%); /* Chrome10+,Safari5.1+ */
+	background: -o-linear-gradient(top,  rgba(224,224,224,1) 0%,rgba(252,252,252,1) 100%); /* Opera 11.10+ */
+	background: -ms-linear-gradient(top,  rgba(224,224,224,1) 0%,rgba(252,252,252,1) 100%); /* IE10+ */
+	background: linear-gradient(to bottom,  rgba(224,224,224,1) 0%,rgba(252,252,252,1) 100%); /* W3C */
+}
+tr {
+	vertical-align: top;
+}
+td {
+	padding: 4px 5px 4px 5px;
+	border: 6px solid white;
+}
+
+.section {
+	margin: 20px;
+}
+.sectionHeader {
+	font-size: 18px;
+	margin-bottom: 7px;
+}
+.sName {
+	font-size: 22px;
+	margin: 20px 20px 20px 0px;
+	padding-bottom: 10px;
+}
+.normal {
+	font-size: 14px;
+	color: #666;
+}
+.endPointExample {
+	padding-top: 15px;
+}
+.endpoint {
+	padding: 2px;
+}
+.example {
+	font-size: 14px;
+}
+img {
+	padding: 10px;
+	outline: none;
+	border: 0;
+}
+ul {
+	font-size: 14px;
+	color: #666;
+}
+ol {
+	font-size: 14px;
+	color: #666;
+}
+.toc1 {
+	list-style: none;
+	padding-top: 10px;
+	font-size: 1em;
+	font-style: italic;
+}
+.toc2 {
+	list-style: none;
+	padding-left: 30px;
+	font-size: 0.9em;
+}
+.toc3 {
+	list-style: none;
+	padding-left: 60px;
+	font-size: 0.8em;
+}
+.code {
+	background-color: #E5EFF7;
+	padding: 10px;
+	margin: 10px 10px 10px 0px;
+	font: 100% Monospace, Courier New, Courier;
+	color: #006;
+	font-size: 12px;
+	display: inline-block;
+}
+.restimg {
+	padding-left: 150px;
+	padding-top: 25px;
+	padding-bottom: 25px;
+}
+.terms {
+	padding: 10px 10px 10px 0px;
+}
+h1 {
+	margin: 30px 20px 10px 0px;
+}
+h2 {
+	margin: 25px 20px 10px 0px;
+}
+h3 {
+	margin: 20px 20px 10px 0px;
+}
+h4 {
+	margin: 15px 20px 5px 0px;
+}
+h5 {
+	margin: 10px 20px 5px 0px;
+}
+.nocontent {
+	margin: 20px;
+}

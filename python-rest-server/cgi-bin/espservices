@@ -1,0 +1,954 @@
+#!/usr/bin/env python  
+import web, json, sys, exceptions, re, datetime, urllib, select, psycopg2, ast, ee, uuid, math, cPickle, pdfkit, logging, pycas, ast, earthEngine, utilities, glob, cairosvg  # , cv2
+from earthEngine import GoogleEarthEngineError
+from amazon_ses import AmazonSES, EmailMessage, AmazonError
+from ee import EEException
+from twilio.rest import TwilioRestClient
+from decimal import Decimal
+from psycopg2 import ProgrammingError, DataError, IntegrityError, extensions, OperationalError
+from dbconnect import dbconnect, twilio, amazon_ses, google_earth_engine
+from orderedDict import OrderedDict
+from lxml import etree
+
+#=====================  CONSTANTS  ==================================================================================================================================================================================================================
+
+CAS_SERVER = "https://intragate.ec.europa.eu"
+WEBPY_COOKIE_NAME = "webpy_session_id"
+
+#=====================  URL HANDLERS  ==================================================================================================================================================================================================================
+
+urls = (
+  "/help", "help",
+  "/terms", "terms",
+  "/manager", "manager",
+  "/createDownloadFile", "createDownloadFile",
+  "/downloadFile", "downloadFile",
+  "/updatehsv", "updatehsv",
+  "/admin/get_admin_functions", "get_admin_functions",
+  "/admin/populate_species_names_table", "populate_species_names_table",
+  "/gee/getAPIVersion", "getAPIVersion",
+  "/gee/getDatesForBB", "getDatesForBB",
+  "/gee/getDatesForPoint", "getDatesForPoint",
+  "/gee/getScenesForPoint", "getScenesForPoint",
+  "/gee/getValuesForPoint", "getValuesForPoint",
+  "/gee/getValuesForPoints", "getValuesForPoints",
+  "/gee/getValuesForPolygon", "getValuesForPolygon",
+  "/gee/createValidationSites", "createValidationSites",
+  "/gee/WMSServer", "geeWMS",
+  "/gee/WMS_scene", "gee_WMS_scene",
+  "/gee/WMS_sequence", "gee_WMS_sequence",
+  "/gee/WMS_video", "gee_WMS_video",
+  "/endSession", "endSession",
+  "/ecasLogin", "ecasLogin",
+  "/ecasProxyLogin", "ecasProxyLogin",
+  "/ecasLogout", "ecasLogout",
+  "/svg2png", "svg2png",
+  "/(.+)/(.+)", "getservice",
+  "/(.+)/", "getservices",
+  "/", "getschemas"
+  )
+
+app = web.application(urls, locals()) 
+session = web.session.Session(app, web.session.DiskStore('../../htdocs/mstmp/restSessions'))  
+
+class DopaServicesError(Exception):
+    """Exception Class that allows the DOPA Services REST Server to raise custom exceptions"""
+    pass  
+
+class CustomJSONEncoder(json.JSONEncoder):
+    """Class to provide the correct serialisation of decimal values into JSON"""
+    def default(self, obj):
+        if isinstance(obj, Decimal):
+            return float(obj)
+        elif isinstance(obj, datetime.date):
+            return obj.isoformat()
+        return json.JSONEncoder.default(self, obj)
+
+#=====================  GET SCHEMAS CLASS  ==================================================================================================================================================================================================================
+
+class getschemas:
+    def GET(self):
+        try:
+            render = web.template.render('templates/')
+            conn = dbconnect("esp_blueprint_schema")
+            conn.cur.callproc("utils.dopa_rest_getschemas")
+            schemas = conn.cur.fetchall()
+            schemasdict = [dict([('name', schema[0]), ('description', schema[1])]) for schema in schemas]
+            return render.getschemas(schemasdict, render.header(), render.footer())
+        
+        except (DopaServicesError, ProgrammingError, OperationalError):
+            return "DOPA Services Error: " + str(sys.exc_info())
+
+#=====================  GET SERVICES CLASS  ==================================================================================================================================================================================================================
+
+class getservices:
+    def GET(self, schemaname):
+        try:
+            render = web.template.render('templates/')
+            conn = dbconnect("esp_blueprint_schema")
+            conn.cur.callproc("utils.dopa_rest_getservices", [schemaname])
+            services = conn.cur.fetchall()
+            servicesdict = [dict([('name', service[0]), ('description', getservicedescription(service[1]))]) for service in services if isVisibleServiceName(service[0])]
+            return render.getservices(schemaname, servicesdict, render.header(), render.footer())
+
+        except (DopaServicesError, ProgrammingError, OperationalError):
+            return "DOPA Services Error: " + str(sys.exc_info())
+
+#=====================  GET SERVICE CLASS  ==================================================================================================================================================================================================================
+
+class getservice:
+    def GET(self, schemaname, servicename):
+        # if there are some parameters then the user is calling the service
+        if web.input():
+            return callservice(schemaname, servicename, web.ctx.query[1:])  # pass the querystring to preserve the order of the parameters - the web.input() collection does not preserve the order
+        else:
+            try:
+                render = web.template.render('templates/')
+                conn = dbconnect("esp_blueprint_schema")
+                conn.cur.callproc("utils.dopa_rest_getservice", [servicename])
+                params = conn.cur.fetchall()
+                if (len(params) == 0):
+                    raise DopaServicesError('No parameters found for service ' + servicename)
+                
+                # parse the description text to get the parameters descriptions - the parameter descriptions are encoded using {<param_desc>$<param_desc>$<param_desc> etc}
+                paramdesc = []
+                paramdescgroups = re.search('{.*}', params[0][1].replace("\n", ""))  # replace line feeds otherwise the regex doesnt work
+                if (paramdescgroups):
+                    paramdesc = paramdescgroups.group(0)[1:-1].split("$")
+                # fill in the parameter descriptions if they have not been written
+                paramdesc[len(paramdesc):] = ['No description' for i in range(len(params) - len(paramdesc))] 
+                
+                # parse the function definition for default parameter values
+                paramdefs = []
+                paramdefsstr = params[0][5]
+                if 'DEFAULT ' in paramdefsstr:
+                    # get the position of the parameter names in the parameter definition string
+                    pos = [paramdefsstr.find(param[3] + ' ') for param in params if (param[2] == 'IN')]
+                    # add on the length of the parameter definition to get the last parameter definition
+                    pos.append(len(paramdefsstr))
+                    # get the parameter definitions as a list
+                    paramdefs = [paramdefsstr[pos[i]:pos[i + 1]] for i in range(len(pos) - 1)]
+                    # remove any trailing spaces with commas
+                    paramdefs = [(p[:-2] if p[-2:] == ', ' else p) for p in paramdefs]
+                    # remove the DEFAULT statement
+                    paramdefs = [(p[p.find('DEFAULT') + 8:] if 'DEFAULT' in p else '') for p in paramdefs]
+                    # remove the  ARRAY[] statement
+                    paramdefs = [(p[6:-1] if 'ARRAY' in p else p) for p in paramdefs]
+                    # remove any typecast symbols, e.g. ::text
+#                    paramdefs = [p[:p.find('::')] if '::' in p else p for p in paramdefs] # some are complicated, e.g. ['wdpa_id integer, ', "rlstatus character[] DEFAULT ARRAY['EN'::text, 'CR'::text, 'VU'::text, 'NT'::text, 'LC'::text, 'EX'::text, 'EW'::text, 'DD'::text]"]
+                    paramdefs = [p.replace("::text", "") for p in paramdefs]
+                    paramdefs = [p.replace("::integer", "") for p in paramdefs]
+                    paramdefs = [p.replace("::character varying", "") for p in paramdefs]
+                    # remove any quotes, e.g. 'CR','DD' -> CR, DD
+                    paramdefs = [p.replace("'", "") for p in paramdefs]
+                    # remove any spaces, e.g. CR, DD -> CR,DD
+                    paramdefs = [p.replace(" ", "") for p in paramdefs]
+                # fill in the paramdefs
+                paramdefs[len(paramdefs):] = ['' for i in range(len(params) - len(paramdefs))]
+#                return params
+                # create a dictionary containing the parameter information
+                paramsdict = [dict([('mode', params[i][2]), ('name', params[i][3]), ('type', gettypefrompostgresql(params[i][4])), ('description', paramdesc[i]), ('default', paramdefs[i])]) for i in range(len(params))]
+                return render.getservice(schemaname, servicename, getservicedescription(params[0][1]), [p for p in paramsdict if (p['mode'] == 'IN')], [p for p in paramsdict if (p['mode'] == 'OUT')], render.header(), render.footer())
+            
+            except (DopaServicesError, ProgrammingError, OperationalError):
+                return "DOPA Services Error: " + str(sys.exc_info())
+
+#=====================  CALL SERVICE METHOD TO RETURN DATA FOR A SERVICE  ==================================================================================================================================================================================================================
+
+def callservice(schemaname, servicename, querystring):
+    try:  
+        t1 = datetime.datetime.now()
+        # log the request
+        logging.basicConfig(filename='../../htdocs/mstmp/REST_Services_Log.log', level=logging.DEBUG, format='%(asctime)s %(levelname)s %(message)s',)
+#         logging.info("REST REQUEST: " + web.ctx.home + web.ctx.path + web.ctx.query)
+        # PARSE THE STANDARD OPTIONAL INPUT PARAMETERS
+        # get the input parameters
+        params = getQueryStringParams(querystring)  # the unquoting is to handle encoded parameters (like from extJS - 1,2,3 as a parameter becomes 1%2C2%2C3
+        # get the standard optional parameters from the url 
+        format = params.setdefault('format', 'json') 
+        fields = params.setdefault('fields', '').split(",")  # fields will be passed as an array, e.g. iucn_species_id,wdpa_id
+        includemetadata = params.setdefault('includemetadata', 'false')
+        metadataName = params.setdefault('metadataname', 'metadata')
+        rootName = params.setdefault('rootname', 'records')
+        parseparams = params.setdefault('parseparams', 'true')
+        sortField = params.setdefault('sortfield', '')
+        isHadoop = ('true' if (servicename[-2:] == '_h') else 'false')  # if the service is a call to a hadoop method then set a flag 
+
+        # remove the standard optional parameters from the dictionary so we are left with just the parameters required for the function
+        del (params['format'], params['fields'], params['includemetadata'], params['parseparams'], params['metadataname'], params['rootname'], params['sortfield'])
+        if 'callback' in params.keys():
+            del(params['callback'])
+
+        # check if the service name is valid
+        if not (isValidServiceName(servicename)):
+            raise DopaServicesError('Invalid servicename')
+        
+        # authorise with ecas if needed
+        if requiresAuthentication(servicename):
+            if isAuthenticated() == False:
+                web.ctx.status = '401 Unauthorized'
+                web.header("Content-Type", "text/html")
+                return "<html><head></html><body><h1>Authentication required</h1></body></html>"
+
+        # connect to the database to get the data
+        conn = dbconnect("esp_blueprint_schema")
+
+        # if it is a Hadoop query then we need to run if first before we actually use the values to get the data from postgresql 
+        if (isHadoop.lower() == 'true'): 
+            hadoopData = runHadoopQuery(conn, servicename, params)
+            if hadoopData == '[]': hadoopData = '[-1]'
+            servicename = "_" + servicename  # now call the postgresql function
+            params.clear()
+            params['species_ids'] = str(hadoopData)[1:-1];
+
+        # PARSE AND CONVERT THE DATA TYPES OF THE OTHER INPUT PARAMETERS
+        # get all the parameters for the function from postgresql
+        conn.cur.callproc('utils.dopa_rest_getparams', [servicename])
+        # get the function parameters as a string and split this into a list, e.g. wdpa_id integer, presence_id integer[] -->  ['wdpa_id integer', ' presence_id integer[]']
+        functionparams = conn.cur.fetchone()
+        hasparams = True if functionparams[0] else False
+        if hasparams:
+            functionparams = functionparams[0].split(',')  
+            # get the names of the function parameters which are array types
+            arrayparamnames = [p.strip().split(" ")[0] for p in functionparams if '[' in p]
+            # convert the array values into lists
+            for key in params.keys():
+                if key in arrayparamnames:
+                    strlist = params[key].split(",")
+                    isnum = isNumeric(strlist[0])
+                    if isnum:
+                        params[key] = [int(s) for s in strlist]
+                    else:
+                        params[key] = strlist
+            # get the full list of function parameter names
+            functionparamnames = [p.strip().split(" ")[0] for p in functionparams]
+            # check that all parameters are correct
+            invalidparamnames = [n for n in params.keys() if n not in functionparamnames]
+            if invalidparamnames and parseparams == 'true':
+                raise DopaServicesError('Invalid parameters: ' + ",".join(invalidparamnames))
+            # put the input parameters in the right order 
+            params = OrderedDict([(n, params[n]) for n in functionparamnames if n in params.keys()])
+            
+        # GET THE SORT CLAUSE
+        if sortField != "":
+            sortClause = ' ORDER BY "' + sortField + '"'
+        else:
+            sortClause = ""
+            
+        # GET THE FIELDS CLAUSE
+        if fields != ['']:
+            fieldsClause = ",".join(fields)
+        else:
+            fieldsClause = "*"
+        
+        # RUN THE QUERY
+        if hasparams :
+            sql = "SELECT " + fieldsClause + " from " + schemaname + "." + servicename + "(" + ",".join([n + ":=%(" + n + ")s" for n in params]) + ")" + sortClause + ";"  # run the query using named parameters
+            conn.cur.execute(sql, params)
+        else:
+            sql = "SELECT * from " + schemaname + "." + servicename + "()" + sortClause + ";" 
+            conn.cur.execute(sql)  
+        rows = conn.cur.fetchall()
+
+        # PROCESS THE ROWS AND WRITE THEM BACK TO THE CLIENT
+        conn.cur.close()
+        t2 = datetime.datetime.now()
+        
+        # METADATA SECTION OF RESPONSE
+        allfields = [d.name for d in conn.cur.description]
+        if (fields == ['']): fields = allfields 
+        fieldcount = len(fields)
+        fieldsdict = [dict([("name", d.name), ("type", gettypefromtypecode(d.type_code))]) for d in conn.cur.description if (d.name in fields)]
+        if len(fieldsdict) != len(fields):
+            raise DopaServicesError('Invalid output fields')
+        metadatadict = OrderedDict([("duration", str(t2 - t1)), ("error", None), ("idProperty", conn.cur.description[0].name), ("successProperty", 'success'), ("totalProperty", 'recordCount'), ("success", True), ("recordCount", int(conn.cur.rowcount)), ("root", rootName), ("fields", fieldsdict)])    
+        
+        # RECORDS SECTION OF THE RESPONSE
+        colsRequired = [allfields.index(field) for field in fields]
+        if format in ['json', 'array']:
+            if format == 'json':
+                recordsdict = [OrderedDict([(allfields[col], row[col]) for col in range(fieldcount) if (col in colsRequired)]) for row in rows] 
+            else:
+                recordsdict = [[row[col] for col in range(fieldcount) if (col in colsRequired)] for row in rows]
+            json.encoder.FLOAT_REPR = lambda f: ("%.14f" % f)  # this specifies how many decimal places are returned in the json with float values - currently set to 14 - good enough for returning lat/long coordinates
+            if (includemetadata.lower() == 'true'):
+                responsejson = json.dumps(dict([(metadataName, metadatadict), (rootName, recordsdict)]), indent=1, cls=CustomJSONEncoder)
+            else: 
+                responsejson = json.dumps(dict([(rootName, recordsdict)]), indent=1, cls=CustomJSONEncoder)
+            return getJsonResponse(responsejson)
+        
+        elif format == 'xml':
+            root = etree.Element('results')
+        #            THERE ARE ISSUES WITH THE XML SERIALISER PARSING INTEGERS AND IN THE FIELD TYPES THERE ARE INTEGERS SO THE METADATADICT OBJECT CAUSES THE XML PARSER TO FAIL AT THE MOMENT SO LEAVING OUT METADATA
+        #            if (includemetadata.lower() == 'true'):
+        #                return metadatadict
+        #                metadatanode = xml.Element('metadata', metadatadict)
+        #                root.append(metadatanode)
+        #                xmlfieldsdicts = [dict([("name", d.name), ("type", str(d.type_code))]) for d in conn.cur.description if (d.name in fields)] # element tree cannot serialise integers so we have to convert these to strings
+        #                fieldselements = [xml.Element('field', dictionary) for dictionary in xmlfieldsdicts]
+        #                fieldsnode = xml.Element('fields')
+        #                for fieldelement in fieldselements:
+        #                    fieldsnode.append(fieldelement)
+        #                metadatanode.append(fieldsnode)
+            recordsdicts = [OrderedDict([(allfields[col], str(row[col]).decode('utf-8')) for col in range(fieldcount) if (col in colsRequired) and str(row[col]) != 'None']) for row in rows ]  #
+            recordselements = [etree.Element('record', element) for element in recordsdicts]
+            recordsnode = etree.Element(rootName)
+            for recordelement in recordselements:
+                recordsnode.append(recordelement)
+            root.append(recordsnode)
+            web.header("Content-Type", "text/xml")
+#             web.header("Content-Type", "application/Excel") # doesnt work!
+#             web.header("Content-Disposition", "attachment; filename=test.xml")
+            return etree.tostring(root)
+        
+        elif format == 'sms':
+            _twilio = twilio()
+            client = TwilioRestClient(_twilio.twilio_account_sid, _twilio.twilio_auth_token)  # use the twilio api account
+            bodystr = 'Hi Andrew - test species data: '
+            bodystr = bodystr + str(rows[0])[:160 - len(bodystr)]
+            message = client.sms.messages.create(to="+393668084920", from_="+19712647662", body=bodystr)  # my mobile
+            return message
+
+        elif format == 'email':
+            _amazon_ses = amazon_ses()
+            amazonSes = AmazonSES(_amazon_ses.AccessKeyID, _amazon_ses.SecretAccessKey)  # use the amazon simple email service api account
+            message = EmailMessage()
+            message.subject = 'DOPA Information Request'
+            message.bodyHtml = getResultsAsHTML(rows, fieldcount, colsRequired, metadatadict) 
+            result = amazonSes.sendEmail('a.cottam@gmail.com', 'a.cottam@gmail.com', message)  # to me
+            return result 
+                    
+        elif format == 'html':
+            htmlData = getResultsAsHTML(rows, fieldcount, colsRequired, metadatadict) 
+            web.header("Content-Type", "text/html") 
+            return "<html><head></head><body>" + htmlData + "</body></html>"
+        
+        elif format == 'csv':
+#             web.header("Content-Type", "text/csv") # downloads a file 
+            data = [[row[col] for col in range(fieldcount) if (col in colsRequired)] for row in rows]
+            colnames = ",".join([f["name"] for f in metadatadict["fields"]]) + "\n"
+            output = colnames + "\n".join([p for p in [",".join(h) for h in [[getStringValue(col) for col in row] for row in data]]]) 
+            return output
+
+        elif format == 'pdf':    
+            config = pdfkit.configuration(wkhtmltopdf='/usr/local/bin/wkhtmltopdf')
+            web.header("Content-Type", "application/pdf")
+            htmlData = getResultsAsHTML(rows, fieldcount, colsRequired, metadatadict)
+            return pdfkit.from_string(htmlData.decode('utf8'), False, configuration=config, options={'quiet': '', 'encoding': "UTF-8"})
+        
+        else:
+            raise DopaServicesError('Invalid response format: ' + format)
+
+    except (DopaServicesError, DataError, ProgrammingError, exceptions.TypeError, IndexError, IntegrityError, AmazonError, OperationalError) as e:
+#        web.webapi.internalerror() #returns a internal server error 500
+        t2 = datetime.datetime.now()
+        msg = "There was an error sending the email. Make sure that the email address has been verified in Amazon Simple Email Services" if type(e) == AmazonError else str(sys.exc_info()).decode('string_escape')
+        logging.error(msg + "\n")
+        if type(e) == ProgrammingError:
+            if ("ORDER BY" in e.message) & ("does not exist" in e.message):
+                msg = "Invalid sortfield parameter: " + sortField
+        if format in ['json', 'array']:
+            metadatadict = OrderedDict([("duration", str(t2 - t1)), ("error", msg), ("idProperty", None), ("successProperty", 'success'), ("totalProperty", 'recordCount'), ("success", False), ("recordCount", 0), ("root", None), ("fields", None)])    
+            responsejson = json.dumps(dict([(metadataName, metadatadict), (rootName, None)]), indent=1)
+            return getJsonResponse(responsejson)
+            
+        else:
+            return "DOPA Services Error: " + msg
+
+#=====================  OTHER CLASSES  ==================================================================================================================================================================================================================
+
+class manager:
+    def GET(self):
+        try:
+            render = web.template.render('templates/')
+            conn = dbconnect("esp_blueprint_schema")
+            conn.cur.execute("select * from especies.species_wdpa_log")
+            rows = conn.cur.fetchall()
+            return render.manager(rows, render.header_manager(), render.footer_manager())
+        
+        except (DopaServicesError, ProgrammingError, OperationalError):
+            return "DOPA Services Error: " + str(sys.exc_info())
+
+class help:
+    def GET(self):
+        render = web.template.render('templates/')
+        return render.help(render.header(), render.footer())
+
+class terms:
+    def GET(self):
+        render = web.template.render('templates/')
+        return render.terms(render.header(), render.footer()) 
+      
+class createDownloadFile():
+    def POST(self):
+        webDataDict = dict()
+        webData = web.data().split("&")
+        for item in webData:
+            kv = item.split("=")
+            webDataDict[kv[0]] = kv[1]
+        filename = webDataDict['filename']
+        algorithm = webDataDict['algorithm']
+        f = open(r'../../htdocs/mstmp/' + filename, 'wb')
+        f.write(urllib.unquote(algorithm))
+        f.close()
+        return filename
+    
+class downloadFile():
+    def GET(self):
+        filename = web.input()['filename']
+        f = open(r'../../htdocs/mstmp/' + filename, 'r')
+        algorithm = f.read()
+        f.close()
+        web.header("Content-Type", "text/plain")
+        web.header("Content-Disposition", "attachment; filename=%s" % filename)
+        return algorithm
+
+
+class updatehsv():
+    def GET(self):
+        hsv = web.input()['hsv']
+        conn = dbconnect("species_especies_schema")
+        conn.cur.execute("UPDATE especies.gee_training_data SET  hue = (gethsv(band" + hsv[0] + ",band" + hsv[1] + ",band" + hsv[2] + ")).hue")
+        return "Done"
+
+#=====================  CALL SERVICE HELPER FUNCTIONS  ==================================================================================================================================================================================================================
+            
+def getQueryStringParams(querystring):
+    return OrderedDict([(q.split("=")[0], urllib.unquote(q.split("=")[1])) for q in querystring.split("&")])
+            
+def getStringValue(value):
+    if value is not None:
+        return str(value)
+    else:
+        return ''
+
+def getResultsAsHTML(rows, fieldcount, colsRequired, metadatadict, landscape=False):  # set landscape to True to set orientation to landscape
+    data = [[row[col] for col in range(fieldcount) if (col in colsRequired)] for row in rows]
+    colnames = "<tr>" + "".join(["<th>" + f["name"] + "</th>" for f in metadatadict["fields"]]) + "</tr>"
+    html = "<table>" + colnames + "".join(["<tr>" + p + "</tr>" for p in ["".join(h) for h in [['<td>' + getStringValue(col) + '</td>' for col in row] for row in data]]]) + "</table>" 
+    if landscape:
+        return "<head><meta name='pdfkit-orientation' content='Landscape'/></head>" + html + "</table>"
+    else:
+        return html
+            
+def gettypefromtypecode(typecode):  # returns a string representation of the psycopg2.cursor.type_code value which is shown in the response - the values come from the pg_type table in PostGIS and these are not complete yet - in the output parameter data type section
+    if (typecode in [16, 1000, 1560, 1561]): return "boolean"
+    elif (typecode in [20, 21, 23]): return "integer"
+    elif (typecode in [26, 790, 1005, 1007, 1028, 1016, 1021, 1022, 1700]): return "number"
+    elif (typecode in [700, 701]): return "float"
+    elif (typecode in [18, 25, 1043, 1002, 1009, 1015, 1043]): return "string"
+    elif (typecode in [702, 703, 704, 1023, 1024, 1025, 1082, 1083, 1084, 1182, 1183, 1184, ]): return "date"
+    elif (typecode in [17, 22, 24, 27, 28, 29, 30]): return "object"
+    elif (typecode in [2278]): return "Null"
+    else: return "Undefined"
+    
+def gettypefrompostgresql(postgresqltype):  # returns a string representation of the SQL data type - this is used to show the data type in the html pages
+    if (postgresqltype.lower() in ['integer', 'bigint']): return "integer"
+    elif (postgresqltype.lower() in ['boolean']): return "boolean"
+    elif (postgresqltype.lower() in ['single precision']): return "single"
+    elif (postgresqltype.lower() in ['double precision']): return "double"
+    elif (postgresqltype.lower() in ['numeric']): return "numeric"
+    elif (postgresqltype.lower() in ['array']): return "array"
+    elif (postgresqltype.lower() in ['character varying', 'text']): return "string"
+    elif (postgresqltype.lower() in ['date']): return "date"
+    elif (postgresqltype.lower() in ['timestamp with time zone']): return "datetime"
+    else: return "unknown"
+
+def getservicedescription(fulldescription):
+    pos = fulldescription.find("{")
+    if pos > -1:
+        return fulldescription[:fulldescription.find("{")]
+    else:
+        return fulldescription
+
+def isNumeric(val):
+    try:
+        i = float(val)
+    except ValueError, TypeError:
+        return False
+    else:
+        return True
+
+def isVisibleServiceName(servicename):
+    if (servicename[:3] in ['get', 'set']) | (servicename[:6] in ['insert', 'delete']) | ((servicename[:4] in ['_get', '_set']) & (web.ctx.host == 'dopa-services.jrc.it')) | ((servicename[:7] in ['_insert', '_delete']) & (web.ctx.host == 'dopa-services.jrc.it')):  
+        return True
+    else:
+        return False
+
+def isValidServiceName(servicename):
+    if (servicename[:3] in ['get', 'set']) | (servicename[:6] in ['insert', 'delete']) | (servicename[:4] in ['_get', '_set']) | (servicename[:7] in ['_insert', '_delete']):  
+        return True
+    else:
+        return False
+
+def runHadoopQuery(conn, functionname, params): 
+    try:
+        conn.cur.execute("INSERT INTO hadoop_jobs(id, functionname, params) VALUES (DEFAULT,'" + functionname + "','" + params['quadkey'] + "') RETURNING id")
+        job_id = conn.cur.fetchone()[0]  # this is the job_id value from the table
+        conn.cur.execute("LISTEN hadoop_job_complete;")  # listen for the results to be posted back
+        conn.cur.execute("NOTIFY hadoop_job_request,'" + str(job_id) + "," + functionname + "," + params['quadkey'] + "'")
+        while 1:
+            if select.select([conn.conn], [], [], 5) == ([], [], []):
+                assert 'nothing'
+            else:
+                conn.conn.poll()
+                while conn.conn.notifies:  # results posted back
+                    conn.cur.execute("UNLISTEN hadoop_job_complete;")
+                    resultsDict = ast.literal_eval(conn.conn.notifies.pop().payload)
+                    return resultsDict['results']
+    except (DopaServicesError, OperationalError):
+        return "DOPA Services Error: " + str(sys.exc_info())
+
+#===============================================   AUTHENTICATION SERVER =============================================================================================================================================
+
+
+def requiresAuthentication(servicename):
+    if (servicename[:3] in ['set']) | ((servicename[:4] == '_set') & (web.ctx.host == 'dopa-services.jrc.it')):
+        return True
+    else:
+        return False
+
+def isAuthenticated():
+    cookie = web.cookies().get(WEBPY_COOKIE_NAME)
+    if cookie == None:
+        return False
+    else:
+        if "loggedin" not in session.keys():
+            return False
+        if session.loggedin == False:
+            return False
+        username = session.username
+        return True
+
+class ecasLogin:  # logs into ECAS and sets the session variables
+    def GET(self):
+        status, id, cookie = pycas.login(CAS_SERVER, web.ctx.home + web.ctx.path)  
+        if status == 0:
+            session.loggedin = True
+            session.username = cookie[cookie.rfind(':') + 1:cookie.find(';')]
+            session.ip = web.ctx.ip
+            return "ECAS authentication successful (webpy session_id: " + session.session_id + ", username: " + session.username + ", ip: " + session.ip + ")" 
+        if status == 1:
+            return "ECAS cookie exceeded its lifetime"
+        if status == 2:
+            return "ECAS cookie is invalid (probably corrupted)"
+        if status == 3:
+            return "ECAS server ticket invalid"
+        if status == 4:
+            return "ECAS server returned without ticket while in gateway mode"
+
+class ecasProxyLogin:  # proxy logs into ECAS and sets the session variables
+    def GET(self):
+        service_url = web.ctx.home + web.ctx.path
+        cas_url = CAS_SERVER + "/cas/login?service=" + service_url
+        if opt in ("renew", "gateway"):
+            cas_url += "&%s=true" % opt
+        #  Print redirect page to browser
+        print "Refresh: 0; url=%s" % cas_url
+        print "Content-type: text/html"
+        if opt == "gateway":
+            domain, path = urlparse.urlparse(service_url)[1:3]
+            print make_pycas_cookie("gateway", domain, path, secure)
+        print """
+    If your browser does not redirect you, then please follow <a href="%s">this link</a>.
+    """ % (cas_url)
+        raise SystemExit
+        response = urllib.urlopen(CAS_SERVER + "/cas/login?service=" + serviceurl)
+        return response
+        status, id, cookie = pycas.login(CAS_SERVER, serviceurl)
+        if status == 0:
+            session.loggedin = True
+            session.username = cookie[cookie.rfind(':') + 1:cookie.find(';')]
+            session.ip = web.ctx.ip
+            ticket = web.ctx.query[1:].split("=")[1]
+            response = urllib.urlopen(CAS_SERVER + "/serviceValidate?ticket=" + ticket + "&service=" + serviceurl + "&pgtUrl=https://foo.bar.com/pgtCallback")
+            return response
+            return "ECAS authentication successful (webpy session_id: " + session.session_id + ", username: " + session.username + ", ip: " + session.ip + ")" 
+
+class endSession:  # ends the session and logs out
+    def GET(self):
+        session.loggedin = False
+        session.kill()
+        return "webpy session_id: " + session.session_id + " ended"
+    
+class ecasLogout():  # redirects to the ecas logout page to end an ECAS session
+    def GET(self):
+        web.redirect(CAS_SERVER + "/cas/logout") 
+
+
+#===============================================   SVG CONVERSION ROUTINES =============================================================================================================================================
+
+class svg2png:
+    def POST(self):
+        svg = web.data()
+        filename = str(uuid.uuid4()) + ".png"
+        cairosvg.svg2png (svg , write_to='../../htdocs/mstmp/' + filename)
+        if (web.ctx.host == "dopa-services.jrc.it"):
+            domain = "lrm-maps.jrc.it/"
+        else:
+            domain = "lrm-maps.jrc.ec.europa.eu/"
+        url = "http://" + domain + "/mstmp/" + filename
+        return url
+
+#===============================================   END OF SVG CONVERSION ROUTINES =============================================================================================================================================
+
+
+#===============================================   GOOGLE EARTH ENGINE SERVER =============================================================================================================================================
+
+class getAPIVersion:
+    def GET(self):
+        return 'wibble'
+    
+class getDatesForBB:  # http://dopa-services.jrc.it/services/gee/getDatesForBB?BBOX=114,5,115,6&CRS=EPSG:4326
+    def GET(self):
+        ll_x, ll_y, ur_x, ur_y = web.input()['BBOX'].split(",")
+        dates = earthEngine.getDatesForBB(ll_x, ll_y, ur_x, ur_y, web.input()['CRS'])
+        if 'callback' in web.input().keys():
+            return web.input()['callback'] + "({'dates':['" + "','".join([d for d in dates]) + "']})"  # return as a jsonp
+        else:
+            return "{'dates':['" + "','".join([d for d in dates]) + "']}"  
+
+class getDatesForPoint:  # http://dopa-services.jrc.it/services/gee/getDatesForPoint?POINT=114,5&CRS=EPSG:4326
+    def GET(self):
+        x, y = web.input()['POINT'].split(",")
+        dates = earthEngine.getDatesForPoint(x, y, web.input()['CRS'])
+        if 'callback' in web.input().keys():
+            return web.input()['callback'] + "({'dates':['" + "','".join([d for d in dates]) + "']})"  # return as a jsonp
+        else:
+            return "{'dates':['" + "','".join([d for d in dates]) + "']}"  
+
+class getScenesForPoint:  # http://dopa-services.jrc.it/services/gee/getScenesForPoint?POINT=14.84368017499996,-3.990951058630029&CRS=EPSG:4326&collection=LANDSAT/LC8_L1T
+    def GET(self):
+        x, y = web.input()['POINT'].split(",")
+        scenes = earthEngine.getScenesForPoint(web.input()['collection'], x, y, web.input()['CRS'])
+#         return scenes['features'][0]['properties']['DATE_ACQUIRED']
+        return getJsonResponse(json.dumps(scenes))
+
+class getValuesForPoint:  # http://dopa-services.jrc.it/services/gee/getValuesForPoint?sceneid=L7_L1T%2FLE70310432001166EDC01&POINT=-105.83545,24.42247&CRS=EPSG:4326
+    def GET(self):
+        params = web.input()
+        x, y = web.input()['POINT'].split(",")
+        vals = earthEngine.getValuesForPoint(params['sceneid'], x, y, web.input()['CRS'])
+        return getJsonResponse(json.dumps(vals))
+            
+class getValuesForPoints:  # http://dopa-services.jrc.it/services/gee/getValuesForPoints?sceneid=L7_L1T%2FLE70310432001166EDC01&points=[[-105.83545,24.42247],[-105.84545,24.42247]]
+    def GET(self):
+        params = web.input()
+        pointsArray = ast.literal_eval(params['points'])
+        vals = earthEngine.getValuesForPoints(params['sceneid'], pointsArray)
+        return getJsonResponse(json.dumps(vals))
+
+class getValuesForPolygon:  # 
+    def GET(self):
+        return 'not yet implemented'
+
+class gee_WMS_scene:  # single landsat scene created from a Google Earth Engine identifier
+    def GET(self):
+        try:
+            # PARAMETER PARSING
+            wmsParameters = wmsParams(web.input())  # get the WMS parameters
+            layerParameters = ast.literal_eval(wmsParameters.layers)
+            # SET THE BOUNDING BOX
+            if wmsParameters.version == "1.3.0":  # get the ll and ur x/y coordinates
+                ll_x, ll_y, ur_x, ur_y = wmsParameters.bbox.split(",")
+            else:
+                ll_x, ll_y, ur_x, ur_y = wmsParameters.bbox.split(",")  # same for the moment
+            # SET THE MIN/MAX VALUES
+            layerParameters.setdefault("min", 7000)
+            layerParameters.setdefault("max", 14000)
+            # GET THE IMAGE THUMBNAIL 
+            output_thumbnail = earthEngine.getSceneImage(layerParameters['sceneid'], ll_x, ll_y, ur_x, ur_y, wmsParameters.crs, wmsParameters.width, wmsParameters.height, layerParameters)
+            # RETURN A LINK TO THE THUMBNAIL 
+            return returnThumbnailJSON(output_thumbnail)
+
+        except (DopaServicesError, ProgrammingError, EEException):
+            return "DOPA Services Error: " + str(sys.exc_info())        
+
+class gee_WMS_sequence():  # http://dopa-services.jrc.it/services/gee/WMS_sequence?POINT=-480654,1687548&CRS=EPSG:102100&collection=LANDSAT/LC8_L1T
+    # http://dopa-services.jrc.it/services/gee/WMS_sequence?POINT=32.84882974169116,14.36796906455707&CRS=EPSG:4326&collection=LANDSAT/LC8_L1T #for Sudan
+    # http://dopa-services.jrc.it/services/gee/WMS_sequence?POINT=-4.364599555187313,14.683008234697786&CRS=EPSG:4326&collection=LANDSAT/LC8_L1T #for Mopti Mali
+    def GET(self):
+        try:
+            x, y = web.input()['POINT'].split(",")
+            scenes = earthEngine.getScenesForPoint(web.input()['collection'], x, y, web.input()['CRS'])
+            layerParameters = {"hsvDetect":True}
+            for scene in scenes['features']:
+                sceneid = scene['id']
+                ll_x = scene['properties']['CORNER_LL_LON_PRODUCT']
+                ll_y = scene['properties']['CORNER_LL_LAT_PRODUCT']
+                ur_x = scene['properties']['CORNER_UR_LON_PRODUCT']
+                ur_y = scene['properties']['CORNER_UR_LAT_PRODUCT']
+                date_acquired = scene['properties']['DATE_ACQUIRED']
+                output_thumbnail = earthEngine.getSceneImage(sceneid, ll_x, ll_y, ur_x, ur_y, "EPSG:4326", "1000", "1000", layerParameters)
+                filename = urllib.urlretrieve(output_thumbnail, '../../htdocs/mstmp/landsat_' + date_acquired + '.png')
+            imgFiles = glob.glob('../../htdocs/mstmp/landsat_*.png')
+            return filename
+        
+        except (DopaServicesError, ProgrammingError, EEException):
+            return "DOPA Services Error: " + str(sys.exc_info())        
+
+class gee_WMS_video():
+    def GET(self):
+        try:
+#             sys.path.append('/usr/local/src/opencv-2.4.8')
+            images = glob.glob ('/srv/www/htdocs/mstmp/landsat_*.png')
+            img = cv2.imread(images[0])
+            height , width , layers = img.shape
+            video = cv2.VideoWriter('/srv/www/htdocs/mstmp/video.avi', -1, 1, (width, height))
+            for image in images:
+                video.write(cv2.imread(image))
+            cv2.destroyAllWindows()  # giving an error at the moment
+            video.release()
+            return "done"
+
+        except (DopaServicesError, ProgrammingError, EEException):
+            return "DOPA Services Error: " + str(sys.exc_info())        
+                
+class createValidationSites:  # http://dopa-services.jrc.it/services/gee/createValidationSites?sceneid=LANDSAT%2FLC8_L1T%2FLC81970502013330LGN00&scenedate=2013-11-26%2010%3A39%3A38.1039567Z&draftSites=%5B%5B-4.113173959020702%2C14.960465199416%2C%22Waterbodies%22%5D%2C%5B-4.258742806677007%2C14.927294080825337%2C%22Waterbodies%22%5D%2C%5B-4.210677621130114%2C14.862263844590363%2C%22Waterbodies%22%5D%5D&callback=dojo_request_script_callbacks.dojo_request_script7&username=Andrew%20Cottam
+    def GET(self):
+        try:
+            # GET THE INPUT PARAMETERS
+            params = web.input()
+            username = params['username']
+            scenedate = params['scenedate']
+            sceneid = params['sceneid']
+            s = sceneid[sceneid.find('/') + 1:sceneid.find('/') + 3]
+            if s == "LC":
+                sensor = "Landsat 8"
+            elif s == "L5":
+                sensor = "Landsat 5"
+                raise DopaServicesError('Creating validation sites is currently not implemented for Landsat 5') 
+            elif s == "L7":
+                sensor = "Landsat 7"
+                raise DopaServicesError('Creating validation sites is currently not implemented for Landsat 7') 
+            # GET THE POINTS
+            sitesArray = ast.literal_eval(params['draftSites'])  # the the array of draft sites
+            lc = [item[2] for item in sitesArray]  # get the land cover types from the array
+            pointsArray = [[item[0], item[1]] for item in sitesArray]  # get the array of points from the draft sites
+            data = earthEngine.getValuesForPoints(params['sceneid'], pointsArray)  # send these to GEE to get the pixel values
+            if len(data) == 1:
+                raise DopaServicesError('No validation sites created. Google Earth Engine did not have any pixel data for the passed geometries')
+            fields = data[0]  # get the fields returned from GEE
+            fieldValues = data[1:]  # get the field values returned from GEE
+            insertinto = "INSERT INTO gee_training_data(land_cover, lat, lng, sensor, sceneid, image_date, band1, band2, band3, band4, band5, band6, band7, band8, band9, band10, band11, bqa, username, entry_date, hue, saturation,val) VALUES"
+            values = ""
+            for i in range(len(data[1:])):  # create the VALUES (''),('') statement
+                values = values + "('" + lc[i] + "'," + str(fieldValues[i][2]) + "," + str(fieldValues[i][1]) + ",'" + sensor + "','" + sceneid + "','" + scenedate + "'"
+                for j in range(len(fields[4:])):  # iterate through the bands pixel values to write the string
+                    values = values + "," + str(fieldValues[i][j + 4])
+                h, s, v = rgbTohsv(fieldValues[i][10], fieldValues[i][8], fieldValues[i][7])  # bands B7, B5, B4 for Landsat 8
+                values = values + ",'" + username + "','" + str(datetime.datetime.now()) + "'," + str(h) + "," + str(s) + "," + str(v) + "),"
+            sql = insertinto + values[:-1]
+            conn = dbconnect("species_especies_schema")
+            conn.cur.execute(sql)
+            responsejson = json.dumps({'rowcount':conn.cur.rowcount})
+            return getJsonResponse(responsejson)
+                        
+        except (DopaServicesError, GoogleEarthEngineError):
+            return "Google Earth Engine Error: " + str(sys.exc_info())        
+
+class geeWMS:
+    def GET(self):
+        try:
+            gee_authenticate_stored()  # isAuthenticated using stored credentials and API definitions
+            self.parseWMSParams(web.input()) 
+            if self.wmsParams.version == "1.3.0":  # get the ll and ur x/y coordinates
+                ll_x, ll_y, ur_x, ur_y = self.wmsParams.bbox.split(",")
+            else:
+                ll_x, ll_y, ur_x, ur_y = self.wmsParams.bbox.split(",")  # same for the moment            
+            self.bounding_box = earthEngine.getBoundingBoxLL(ll_x, ll_y, ur_x, ur_y, self.wmsParams.crs)  # get the bounding box as lat/long suitable for sending to GEE API
+            d, m, y = [int(s) for s in self.date.split("-")]
+            collection = ee.ImageCollection(self.dataset).filterBounds(ee.Feature.Polygon([self.bounding_box])).filterDate(datetime.datetime(y, m, d - 1), datetime.datetime(y, m, d + 1))
+            
+            # cloud correction
+            if self.remove_cloud:
+                image = self.cloudCorrection(collection)
+            else:
+                image = collection.median()
+            
+            # illumination correction
+            if self.remove_illumination:
+                image = self.illuminationCorrection(image)
+                
+            # colour and contrast adjustment
+            if (self.bands == "B4,B3,B2") or (self.bands == "B2,B3,B4"): 
+                image = ee.Image.cat([image.expression("b('B4')+770"), image.select('B3'), image.expression("b('B2')-1230")]);
+            min = 7000
+            max = 10000
+            
+            # create the thumbnail
+            collection_image_thumbnail = image.getThumbUrl({'bands': self.bands, 'size': self.wmsParams.width + 'x' + self.wmsParams.height, 'min': min, 'max': max, 'region': self.bounding_box})
+            
+#             web.header("Content-Type", "images/png")                #returns as a file
+            return urllib.urlopen(collection_image_thumbnail)  # streams the image back to the client
+        
+        except (DopaServicesError, ProgrammingError, EEException):
+            return "DOPA Services Error: " + str(sys.exc_info())        
+        
+    def getTestImage(self):
+        image = ee.Image("LANDSAT/LC8_L1T/LC81970502013330LGN00")
+        image_thumbnail = image.getThumbUrl({'bands': 'B6,B5,B4', 'size': '600'})
+        return urllib.urlopen(image_thumbnail)  # streams the image back to the client
+               
+    def parseWMSParams(self, parameters):
+        # example parameters {'STYLES': u'', 'LAYERS': u'1', 'SERVICE': u'WMS', 'CRS': u'EPSG:102100', 'FORMAT': u'image/png', 'REQUEST': u'GetMap', 'HEIGHT': u'400', 'WIDTH': u'1904', 'VERSION': u'1.3.0', 'BBOX': u'-24867967,734592,12389274,8561744', 'TRANSPARENT': u'TRUE'}>
+        # get the gee params
+        self.wmsParams = wmsParams(parameters)
+        gee_params = self.wmsParams.layers.split("!")
+        self.dataset = gee_params[0]
+        self.date = gee_params[1]
+        self.remove_cloud = (gee_params[2] == "1")
+        self.remove_illumination = (gee_params[3] == "1")
+        self.bands = gee_params[4]
+        
+    def illuminationCorrection(self, image):
+        # accepts either a single scene which will have the sun elevation and azimuth already populated, or a collection image which will need to have the sun elevation and azimuth manually populated and accessed via the properties
+        try:
+            terrain = ee.call('Terrain', ee.Image('srtm90_v4'))
+            # solar_zenith = (90 - image.getInfo()['properties']['SUN_ELEVATION'])
+            solar_zenith = 31.627850000000002
+            # solar_azimuth = image.getInfo()['properties']['SUN_AZIMUTH']
+            solar_azimuth = 50.377735
+            solar_zenith_radians = (solar_zenith * math.pi) / 180
+            slope_radians = terrain.select(['slope']).expression("(b('slope')*" + str(math.pi) + ")/180")
+            aspect = terrain.select(['aspect'])
+            cosZ = math.cos(solar_zenith_radians)
+            cosS = slope_radians.cos()
+            slope_illumination = cosS.expression("b('slope')*(" + str(cosZ) + ")").select(['slope'], ['b1'])
+            sinZ = math.sin(solar_zenith_radians)
+            sinS = slope_radians.sin()
+            azimuth_diff_radians = aspect.expression("((b('aspect')-" + str(solar_azimuth) + ")*" + str(math.pi) + ")/180")
+            cosPhi = azimuth_diff_radians.cos()
+            aspect_illumination = cosPhi.multiply(sinS).expression("b('aspect')*" + str(sinZ)).select(['aspect'], ['b1'])
+            ic = slope_illumination.add(aspect_illumination)
+            return image.expression("((image * (cosZ + coeff)) / (ic + coeff)) + offsets", {'image': image.select('B4', 'B3', 'B2'), 'ic': ic, 'cosZ': cosZ, 'coeff': [12, 9, 25], 'offsets': [0, 0, 0]})
+        except (DopaServicesError, ProgrammingError, EEException):
+            return "DOPA Services Error: " + str(sys.exc_info())        
+
+    def cloudCorrection(self, collection):
+        cloudless_images = []
+        lsb_val = int(math.pow(2, 14))
+        msb_val = int(math.pow(2, 15))
+        for feature in collection.getInfo()['features']:
+            image = ee.Image(feature['id'])
+            cloud = image.expression("(2*(b('BQA')&" + str(msb_val) + ")/" + str(msb_val) + ")+((b('BQA')&" + str(lsb_val) + ")/" + str(lsb_val) + ")")
+            cloud_mask = cloud.expression("(b('constant')==1)")
+            masked = image.mask(cloud_mask)
+            output = masked.toUint16().focal_median()
+            cloudless_images.append(output)
+        return ee.ImageCollection(cloudless_images).median()
+    
+class wmsParams:  # class to retrieve the standard wms parameters
+    def __init__(self, parameters):
+        self.style = parameters['STYLES']
+        self.service = parameters['SERVICE']
+        self.crs = parameters['CRS']
+        self.layers = parameters['LAYERS']
+        self.format = parameters['FORMAT']
+        self.request = parameters['REQUEST']
+        self.height = parameters['HEIGHT']
+        self.width = parameters['WIDTH']
+        self.version = parameters['VERSION']
+        self.bbox = parameters['BBOX']
+        self.transparent = parameters['TRANSPARENT']
+    
+def returnThumbnailJSON(url):
+    params = getQueryStringParams(web.ctx.query[1:])  # get the querystring parameters to get the callback function name
+    responsejson = json.dumps({"url":url})
+    return getJsonResponse(responsejson)
+
+def getJsonResponse(json):
+    callback = web.input().setdefault('callback', None)
+    if callback:
+        web.header("Content-Type", "application/javascript") 
+        return callback + '(' + json + ');'                 
+    else:
+        web.header("Content-Type", "application/json") 
+        return json
+   
+def createGoogleAPIJson():
+    gee_authenticate()
+    f = open(r'google earth engine/_api.pickle', 'wb')
+    cPickle.dump(ee.ApiFunction._api, f)
+    f.close()
+
+def gee_authenticate():
+    _google_earth_engine = google_earth_engine()  # isAuthenticated directly with GEE API
+    ee.Initialize(ee.ServiceAccountCredentials(_google_earth_engine.MY_SERVICE_ACCOUNT, _google_earth_engine.MY_PRIVATE_KEY_FILE)) 
+
+def gee_authenticate_stored():
+    # initialise the authentication with Google Earth Engine
+    f_credentials = open(r'google earth engine/_credentials.pickle', 'rb')
+    ee.data.initialize(cPickle.load(f_credentials))
+    f_credentials.close()
+    
+    # initialise the API
+    f_api = open(r'google earth engine/_api.pickle', 'rb')  # pickle of the gee api functions in json format
+    ee.ApiFunction._api = cPickle.load(f_api)
+    f_api.close()
+    ee.Image.initialize()
+    ee.Feature.initialize()
+    ee.Collection.initialize()
+    ee.ImageCollection.initialize()
+    ee.FeatureCollection.initialize()
+    ee.Filter.initialize()
+    ee.Geometry.initialize()
+    ee.String.initialize()
+    ee._InitializeGeneratedClasses()
+    ee._InitializeUnboundMethods()
+
+def rgbTohsv(r, g, b):
+    maxVal = float(max(r, g, b))
+    minVal = float(min(r, g, b))
+    val = maxVal
+    saturation = (val - minVal) / maxVal
+    if val == minVal:
+        hue = 0
+    elif val == r:
+        hue = ((((g - b) / (val - minVal)) * 60) + 360) % 360
+    elif val == g:
+        hue = (((b - r) / (val - minVal) * 60) + 120)
+    elif val == b:
+        hue = (((r - g) / (val - minVal) * 60) + 240)
+    return (hue, saturation, val)
+
+
+#===============================================   ADMINISTRATIVE FUNCTIONS  =============================================================================================================================================
+    
+class get_admin_functions:  # http://dopa-services.jrc.it/services/admin/get_admin_functions
+    def GET(self):
+        web.header("Content-Type", "application/javascript") 
+        return web.input()['callback'] + '([{"name":"populate_species_names_table", "label":"Populate species names table"}])'  # return as a jsonp
+
+class populate_species_names_table:  # http://dopa-services.jrc.it/services/admin/populate_species_names_table
+    def GET(self):
+        try:
+            logging.basicConfig(filename='../../htdocs/mstmp/populate_species_names_table.log', level=logging.DEBUG, format='%(asctime)s %(levelname)s %(message)s',)
+            count = 1
+            conn = dbconnect("species_especies_schema")
+            conn.cur.execute("delete from species_names;")
+            conn.cur.execute("select id_no,friendly_n from species_distribution.speciestaxonomy where friendly_n is not null;")
+            rows = conn.cur.fetchall()
+            for row in rows:
+                IDspecies = row[0]
+                binomial = row[1]
+                try:
+                    nubkey = gbif.getNubKey(binomial)
+                    commonnames = gbif.getVernacularNames(nubkey)            
+                    if len(commonnames) > 0:
+                        for commonname in commonnames:
+                            language = commonname[0]
+                            name = commonname[1]
+                            conn.cur.execute("INSERT INTO species_names(iucn_species_id, name, language) VALUES (" + IDspecies + ",'" + name + "','" + language + "');")
+                except (GBIFServiceError):
+                    logging.error("GBIFServiceError: " + str(sys.exc_info()) + " (record " + str(count) + ")")
+                    continue
+                count = count + 1
+#                 if count > 20:
+        finally:
+            conn.close()
+            web.header("Content-Type", "application/javascript") 
+            return web.input()['callback'] + '({"status":"completed"})'  # return as a jsonp
+        
+if __name__ == "__main__":
+    app.run()

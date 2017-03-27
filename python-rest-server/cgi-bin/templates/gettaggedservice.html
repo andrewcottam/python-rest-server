@@ -1,0 +1,137 @@
+$def with (tagname, servicename, servicedesc, inparams, outparams, header, footer)
+<html>
+	<head>
+		<title>DOPA Web Services</title>
+		<link rel="stylesheet" type="text/css" href="/styles/tagsStyles.css" />
+	</head>
+	<body>
+		$:header
+		<div class="breadcrumb"><a href="../">Tags&nbsp;&nbsp;</a> | &nbsp;&nbsp;<a href="../$tagname/">$tagname &nbsp;&nbsp;</a> | &nbsp;&nbsp;$servicename</div>
+
+		<div class="section">
+			<div class="sName">$servicename &nbsp;Service</div>
+			<div class="sectionHeader">Description:</div><div class="normal">$:servicedesc</div>
+		</div>
+		
+		<!--Input parameters-->
+		<div class="section"><div class="sectionHeader">Input parameters:</div>
+		<table class="table2" cellspacing="0">
+		$if inparams:
+			<tr><th>Name</th><th>Description</th><th>Type</th><th>Default value</th></tr>
+
+			$for inparam in inparams:
+				$if inparam['default']=='':
+					<tr><td>$inparam['name']</td><td>$:inparam['description']</td><td>$inparam['type']</td><td>$:inparam['default']</td></tr>
+				$else:
+					<tr><td><i>$inparam['name']</i></td><td>$:inparam['description'] (optional)</td><td>$inparam['type']</td><td>$:inparam['default']</td></tr>
+		$else:
+			<tr><td colspan="4">No mandatory input parameters</td></tr>
+		</table>
+		<div class="normal">The standard optional parameters are not shown (see the <a href='../help' target='_help'>Help</a> Documentation for more information)</div>
+		</div>
+			
+		<!--Output parameters-->
+		<div class="section"><div class="sectionHeader">Output Parameters:</div>
+		<table class="table2" cellspacing="0">
+		$if outparams:		
+			<tr><th>Name</th><th>Description</th><th>Type</th></tr>
+
+			$for outparam in outparams: 
+				<tr><td>$outparam['name']</td><td>$:outparam['description']</td><td>$outparam['type']</td></tr>
+		$else:
+			<tr><td colspan="3">No output parameters</td></tr>
+		</table>
+		</div>
+			
+		<!--Example calls-->
+		<div class="section"><div class="sectionHeader">Example calls:</div>
+			
+		$def getqueryparams(params, queryparams):
+			$for param in params:
+				$ value = "1"
+				$if (param['name'] in ['country']):
+					$ value = "Honduras"
+				$if (param['name'] in ['country_id','countryid']):
+					$ value = "458"
+				$elif (param['name'] in ['wdpa_id','wdpaid']):
+					$ value = "785" 
+				$elif (param['name'] in ['iucn_species_id','species_id','speciesid']):
+					$ value = "17975"
+				$elif (param['name'] in ['ecoregionid']):
+					$ value = "10122"
+				$elif (param['name'] in ['startdate']):
+					$ value = "20120101"
+				$elif (param['name'] in ['enddate']):
+					$ value = "20121221"
+				$elif (param['name'] in ['latitude']):
+					$ value = "4.7374874801628"
+				$elif (param['name'] in ['longitude']):
+					$ value = "117.1214580575966"
+				$elif (param['name'] in ['taxongroup']):
+					$ value = "aves"
+				$elif (param['name'] in ['language2']):
+					$ value = "english"
+				$elif (param['name'] in ['language1']):
+					$ value = "french"
+				$elif (param['name'] in ['quadkey']):
+					$ value = "132320330230021"
+				$if (param['type']=='array'):
+					$if (param['default']!=''):
+						$if ',' in param['default']:
+							$ value = param['default'].split(',')[0] + ',' + param['default'].split(',')[1]
+						$else:
+							$ value = param['default']
+					$else:
+						$if (param['name'] in ['wdpa_ids']):
+							$ value = "901237,785,220292"
+						$else: 
+							$ value = "1,2"
+				$if (param['type']=='date'):
+					$ value = "03/31/2012"
+				$if (param['type']=='datetime'):
+					$ value = "03/31/2012 10:15:25"
+				$ queryparams.append(param['name'] + "=" + value)
+
+		$ querystring = "?"
+		$ mandatoryquerystring = "?"
+		$if inparams:
+			$ queryparams = []
+			$# build the mandatory parameters for the query string
+			$ getqueryparams([p for p in inparams if (p['default']== '')], queryparams)
+			$ mandatoryquerystring = "?" + "&".join([param for param in queryparams])
+			$# build the optional parameters for the query string
+			$ getqueryparams([p for p in inparams if (p['default']!= '')], queryparams)
+			$ querystring = "?" + "&".join([param for param in queryparams])
+
+		<!--Mandatory parameters example calls-->
+		<div class="endPointExample">REST call using mandatory parameters</div>
+		$if mandatoryquerystring!='?':		
+			<div class="endpoint"><a href='$mandatoryquerystring' target='__examplecall' title="Example call" class="example">$mandatoryquerystring</a></div>
+		$else:
+			<div>No mandatory input parameters</div>
+
+		<!--Optional parameters example calls-->
+		<div class="endPointExample">REST call using optional parameters</div>
+		$if len(mandatoryquerystring)!=len(querystring):
+			<div class="endpoint"><a href='$querystring' target='__examplecall' title="Example call" class="example">$querystring</a></div>
+		$if querystring!='?': 
+			$ prefix = querystring + '&' 
+		$else:
+			$ prefix = querystring
+		<div class="endpoint"><a href='$(prefix)format=xml' target='__examplecall' title="Example call" class="example">$(prefix)format=xml</a></div>
+		<div class="endpoint"><a href='$(prefix)format=array&includemetadata=false' target='__examplecall' title="Example call" class="example">$(prefix)format=array&includemetadata=false</a></div>
+		$if (len(outparams)>0):
+			<div class="endpoint"><a href='$(prefix)format=pdf&sortfield=$outparams[0]['name']' target='__examplecall' title="Example call" class="example">$(prefix)format=pdf&sortfield=$outparams[0]['name']</a></div>
+			<div class="endpoint"><a href='$(prefix)format=json&fields=$outparams[0]['name']' target='__examplecall' title="Example call" class="example">$(prefix)format=json&fields=$outparams[0]['name']</a></div>
+
+		<!--Excel endpoint-->
+		<div class="endPointExample">Excel endpoint</div>
+		$if mandatoryquerystring!='?':		
+			<div class="endpoint"><a href='$(mandatoryquerystring)&format=xml' target='__examplecall' title="Example call" class="example">$(mandatoryquerystring)&format=xml</a></div>
+		$else:
+			<div class="endpoint"><a href='$(mandatoryquerystring)format=xml' target='__examplecall' title="Example call" class="example">$(mandatoryquerystring)format=xml</a></div>
+		</div>
+		
+		$:footer		
+	</body>
+</html>

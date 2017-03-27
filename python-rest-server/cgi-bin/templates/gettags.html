@@ -1,0 +1,19 @@
+$def with (resourcesdict, header, footer)
+<html>
+	<head>
+		<title>DOPA Web Services</title>
+		<link rel="stylesheet" type="text/css" href="/styles/tagsStyles.css" />
+	</head> 
+	<body>
+		$:header
+		<div class="breadcrumb">Tags</div>
+		$if resourcesdict:
+			<table class="table" cellspacing="0"><tr><th style="width: 20%">Tag name</th><th>Description</th></tr>
+			$for resource in resourcesdict:
+				<tr><td><a href="$resource['tagname']/">$resource['tagname']</a></td><td>$resource['description']</td></tr>
+			</table>
+		$else:
+		    <p>No content</p>
+		$:footer
+	</body>
+</html>

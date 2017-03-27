@@ -1,0 +1,14 @@
+$def with (dsn, schemaname, services, header, footer)
+<html>
+		$:header
+		<div class="breadcrumb"><a href="../../">Databases&nbsp;&nbsp;</a> | &nbsp;&nbsp;<a href="../">$dsn&nbsp;&nbsp;</a> | &nbsp;&nbsp;$schemaname</div>
+		$if services:
+			<table class="table" cellspacing="0"><tr><th>Service</th><th>Description</th></tr>
+			$for service in services:
+				<tr><td><a href="$service['name']">$service['name']</a></td><td>$:service['description']</td></tr>
+			</table>
+		$else:
+		    <p class="nocontent">No content</p>
+		$:footer
+	</body>
+</html>

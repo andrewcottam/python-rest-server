@@ -1,0 +1,19 @@
+$def with (tag, services, header, footer)
+<html>
+	<head>
+		<title>DOPA Web Services</title>
+		<link rel="stylesheet" type="text/css" href="/styles/tagsStyles.css" />
+	</head>
+	<body>
+		$:header
+		<div class="breadcrumb"><a href="../">Tags&nbsp;&nbsp;</a> | &nbsp;&nbsp;$tag</div>
+		$if services:
+			<table class="table" cellspacing="0"><tr><th>Service</th><th>Description</th></tr>
+			$for service in services:
+				<tr><td><a href="$service['service']">$service['service']</a></td><td>$:service['description']</td></tr>
+			</table>
+		$else:
+		    <p class="nocontent">No content</p>
+		$:footer
+	</body>
+</html>
