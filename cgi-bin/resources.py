@@ -3,7 +3,8 @@ import sys
 import psycopg2, psycopg2.extras
 
 databases = {
-    "biopama": dict(connectionString="dbname='biopama' host='localhost' user='jrc' password='thargal88'", description="BioPAMA related data")
+    "biopama": dict(connectionString="dbname='biopama' host='localhost' user='jrc' password='thargal88'", description="BioPAMA related data"),
+    "roadless": dict(connectionString="dbname='roadless' host='localhost' user='jrc' password='thargal88'", description="Roadless Areas related data"),
 }
 
 #set the documentRoot to the relative path to the python-rest-server/htmldocs folder from the Apache html folder (if it is not set in an Apache vhost.conf file)
