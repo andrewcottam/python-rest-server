@@ -44,8 +44,7 @@ In phppgadmin, run the sql script 'scripts/setup_postgis.sql'
 ## PYTHON REST SERVER
 1.	In phppgadmin, create a database in phpPgAdmin with UTF-8 encoding
 2.	In phppgadmin, run the sql script 'scripts/database_objects.sql' to create the necessary database objects in Postgresql
-3.	Clone the Python REST Server folder into the workspace (git clone https://github.com/andrewcottam/python-rest-server.git)
-4.	Copy the resources_empty.py file and rename to resources.py and create the database connection strings. 
+3.	Copy the resources_empty.py file and rename to resources.py and create the database connection strings. 
 
 ## PYTHON PREREQUISITES
 $ sudo easy_install flup==1.0.3.dev-20110405 
@@ -59,14 +58,12 @@ Apache must be configured to run CGI scripts
 $ sudo a2enmod cgi
 $ sudo vi /etc/apache2/conf-available/serve-cgi-bin.conf
 In the IfDefine section of the file, enter the following:
-    ScriptAlias /cgi-bin/ /home/ubuntu/workspace/python-rest-server/cgi-bin/
+    ScriptAlias /cgi-bin/ /home/ubuntu/workspace/cgi-bin/
     <Directory "/home/ubuntu/workspace/cgi-bin">
             AllowOverride None
             Options +ExecCGI -MultiViews +SymLinksIfOwnerMatch
             AddHandler cgi-script .cgi .py
             Require all granted
     </Directory>
-Set permissions:
-$ chmod +x -R /home/ubuntu/workspace/python-rest-server/cgi-bin
 Start Apache
 Available here https://<c9workspacename>-<c9username>.c9users.io/cgi-bin/services.py/ 
