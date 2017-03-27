@@ -54,7 +54,7 @@ $ sudo a2enmod cgi
 $ sudo vi /etc/apache2/conf-available/serve-cgi-bin.conf
 In the IfDefine section of the file, enter the following:
     ScriptAlias /cgi-bin/ /home/ubuntu/workspace/python-rest-server/cgi-bin/
-    <Directory "/home/ubuntu/workspace/python-rest-server/cgi-bin">
+    <Directory "/home/ubuntu/workspace/cgi-bin">
             AllowOverride None
             Options +ExecCGI -MultiViews +SymLinksIfOwnerMatch
             AddHandler cgi-script .cgi .py
