@@ -1,0 +1,15 @@
+$def with (dsn, schemas, header, footer)
+<html>
+		$:header
+		<div class="breadcrumb"><a href="../">Databases&nbsp;&nbsp;</a> | &nbsp;&nbsp;$dsn</div>
+		$if schemas:
+			<table class="table" cellspacing="0"><tr><th>Schema</th><th>Description</th></tr>
+			$for schema in schemas:
+				$ schemaurl = "http://" + schema['name'] +  ".jrc.ec.europa.eu/"
+				<tr><td><a href="$schema['name']/">$schema['name']</a></td><td>$schema['description']</td></tr>
+			</table>
+		$else:
+		    <p>No content</p>
+		$:footer
+	</body>
+</html>
