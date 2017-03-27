@@ -13,6 +13,7 @@ To take advantage of these features you simply need to create a function in Post
 
 # Installation
 Installation instructions for Ubuntu 14.04 (on Cloud9):
+Clone the GitHub repo in Cloud9 to create a new workspace 
 
 ## CONFIGURE POSTGRESQL 9.3
 Configuring Postgres which is already installed:
@@ -25,19 +26,24 @@ postgres=# \q
  $ sudo sudo -u postgres createuser jrc -P -s
 Enter password for new role: 
 Enter it again: 
-postgres=# \q
 
 ## CONFIGURE PHPPGADMIN
 $ sudo cp /etc/apache2/conf.d/phppgadmin /etc/apache2/conf-enabled/phppgadmin.conf
 $ sudo /etc/init.d/apache2 restart
 $ sudo nano /etc/apache2/conf-enabled/phppgadmin.conf
 Edit to ‘allow from all’
-$sudo service apache2 reload
+$ sudo service apache2 reload
 Available here https://<c9workspacename>-<c9username>.c9users.io/phppgadmin/
+
+## CONFIGURE POSTGIS
+$ sudo apt-get update
+$ sudo apt-get install postgresql postgresql-contrib postgis postgresql-9.3-postgis-scripts
+$ sudo apt-get update
+In phppgadmin, run the sql script 'scripts/setup_postgis.sql'
 
 ## PYTHON REST SERVER
 1.	In phppgadmin, create a database in phpPgAdmin with UTF-8 encoding
-2.	In phppgadmin, run the sql script 'database_objects.sql' to create the necessary database objects in Postgresql
+2.	In phppgadmin, run the sql script 'scripts/database_objects.sql' to create the necessary database objects in Postgresql
 3.	Clone the Python REST Server folder into the workspace (git clone https://github.com/andrewcottam/python-rest-server.git)
 4.	Copy the resources_empty.py file and rename to resources.py and create the database connection strings. 
 
