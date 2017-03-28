@@ -32,9 +32,9 @@ $ sudo /etc/init.d/apache2 restart
 $ sudo nano /etc/apache2/conf-enabled/phppgadmin.conf  
 Edit to ‘allow from all’  
 $ sudo service apache2 reload  
-Available here [https://&lt;c9workspacename&gt;-&lt;c9username&gt;.c9users.io/phppgadmin/](https://<c9workspacename>-<c9username>.c9users.io/phppgadmin/)
+Available here: [https://&lt;c9workspacename&gt;-&lt;c9username&gt;.c9users.io/phppgadmin/](https://<c9workspacename>-<c9username>.c9users.io/phppgadmin/)
 
-## CONFIGURE POSTGIS
+## INSTALL POSTGIS
 $ sudo apt-get update  
 $ sudo apt-get install postgresql postgresql-contrib postgis postgresql-9.3-postgis-scripts  
 $ sudo apt-get update  
@@ -66,4 +66,4 @@ In the IfDefine section of the file, enter the following:
 &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;Require all granted  
 &nbsp;&nbsp;&nbsp;&nbsp;&lt;/Directory&gt;  
 Start Apache  
-Available here https://<c9workspacename>-<c9username>.c9users.io/cgi-bin/services.py/   
+Available here: [https://&lt;c9workspacename&gt;-&lt;c9username&gt;.c9users.io/cgi-bin/services.py/](https://<c9workspacename>-<c9username>.c9users.io/cgi-bin/services.py/)
