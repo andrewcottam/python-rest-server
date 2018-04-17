@@ -13,30 +13,30 @@ To take advantage of these features you simply need to create a function in Post
 
 # Installation
 Installation instructions are for Ubuntu 14.04 (on Cloud9):
-
+ 
 ## CONFIGURE POSTGRESQL
-Configuring Postgres 9.3 which is already installed on Cloud9:  
-$ sudo service postgresql start  
-$ sudo sudo -u postgres psql  
-postgres=# \password postgres  
-Enter new password:   
-Enter it again:   
+Configuring Postgres 9.3 which is already installed on Cloud9:    
+$ sudo service postgresql start       
+$ sudo sudo -u postgres psql     
+postgres=# \password postgres      
+Enter new password:    
+Enter it again:       
 postgres=# \q  
-$ sudo sudo -u postgres createuser jrc -P -s  
+$ sudo sudo -u postgres createuser jrc -P -s   
 Enter password for new role:  
-Enter it again:  
-
-## CONFIGURE PHPPGADMIN
+Enter it again:    
+ 
+## CONFIGURE PHPPGADMIN 
 $ sudo cp /etc/apache2/conf.d/phppgadmin /etc/apache2/conf-enabled/phppgadmin.conf  
 $ sudo /etc/init.d/apache2 restart  
 $ sudo nano /etc/apache2/conf-enabled/phppgadmin.conf  
 Edit to ‘allow from all’  
-$ sudo service apache2 reload  
+$ sudo service apache2 reload   
 Available here: [https://&lt;c9workspacename&gt;-&lt;c9username&gt;.c9users.io/phppgadmin/](https://<c9workspacename>-<c9username>.c9users.io/phppgadmin/)
 
 ## INSTALL POSTGIS
 $ sudo apt-get update  
-$ sudo apt-get install postgresql postgresql-contrib postgis postgresql-9.3-postgis-scripts  
+$ sudo apt-get install postgresql postgresql-contrib postgis postgresql-9.3-postgis-scripts   
 $ sudo apt-get update  
 In phppgadmin, run the sql script 'scripts/setup_postgis.sql'  
 

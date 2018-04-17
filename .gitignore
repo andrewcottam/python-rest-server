@@ -3,7 +3,7 @@
 #################
 
 cgi-bin/resources.py
-*.backup
+backup/
 php.ini
  
 #################
