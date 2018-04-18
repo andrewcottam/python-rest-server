@@ -1,5 +1,5 @@
 #!/usr/bin/env python
-import web, subprocess
+import web, os, subprocess
 urls = (
   "/", "callMarxan"
   )
@@ -7,10 +7,13 @@ urls = (
 class callMarxan:
     def GET(self):
         try:
-            marxan_response = subprocess.check_output("/home/ubuntu/workspace/marxan/Marxan243/MarOpt_v243_Linux64") # run marxan command
+            web.header('Content-Type','text/html') 
+            os.chdir("/home/ubuntu/workspace/marxan/Marxan243/MarxanData_unix") # so files can be found in the input.dat file
+            p = subprocess.Popen(["/home/ubuntu/workspace/marxan/Marxan243/MarxanData_unix/MarOpt_v243_Linux64"], stdout=subprocess.PIPE) 
+            out, err = p.communicate()
         except subprocess.CalledProcessError as e:
             return "Marxan return code: " + str(e.returncode)
-        return marxan_response
+        return out
 
 app = web.application(urls, locals()) 
 
