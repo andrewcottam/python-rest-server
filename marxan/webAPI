@@ -1,6 +1,7 @@
 #!/usr/bin/env python
 # example call: https://db-server-blishten.c9users.io/marxan/webAPI/
-import web, os, subprocess, urllib
+import sys, os, web, subprocess, urllib
+# import geopandas as gpd
 MARXAN_EXECUTABLE_PATH = "/home/ubuntu/workspace/marxan/Marxan243/MarxanData_unix"
 MARXAN_EXECUTABLE_NAME = "MarOpt_v243_Linux64"
 MARXAN_INPUT_PARAMETER_FILENAME = "input.dat"
@@ -53,6 +54,7 @@ class runMarxan:
             return "Marxan return code: " + str(e.returncode)
         web.header('Content-Type','text/plain') 
         return out
+        # return sys.path
 
 app = web.application(urls, locals()) 
 
