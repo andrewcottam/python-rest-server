@@ -1,18 +1,57 @@
 #!/usr/bin/env python
-import web, os, subprocess
-urls = (
-  "/", "callMarxan"
-  )
+# example call: https://db-server-blishten.c9users.io/marxan/webAPI/
+import web, os, subprocess, urllib
+MARXAN_EXECUTABLE_PATH = "/home/ubuntu/workspace/marxan/Marxan243/MarxanData_unix"
+MARXAN_EXECUTABLE_NAME = "MarOpt_v243_Linux64"
+MARXAN_INPUT_PARAMETER_FILENAME = "input.dat"
 
-class callMarxan:
+urls = (
+  "/run", "runMarxan"
+  )
+  
+def getQueryStringParams(querystring):
+    if len(querystring):
+        return dict([(q.split("=")[0].upper(), urllib.unquote(q.split("=")[1])) for q in querystring.split("&")])
+    else:
+        return None
+
+def injectRunParameters(newParams):
+    if newParams:
+        #get the existing parameters
+        paramsFile = open(MARXAN_EXECUTABLE_PATH + os.sep + MARXAN_INPUT_PARAMETER_FILENAME, 'rb')
+        s = paramsFile.read()
+        paramsFile.close()
+        #update any that are passed in as query params
+        for k, v in newParams.iteritems():
+            try:
+                p1 = s.index(k) #get the first position of the parameter
+                if p1:
+                    p2 = s[p1:].index("\r\n") #get the position of the end of line
+                    s = s[:p1] + k + " " + v + s[(p1 + p2):]
+                #write these parameters back to the input.dat file
+                paramsFile = open(MARXAN_EXECUTABLE_PATH + os.sep + MARXAN_INPUT_PARAMETER_FILENAME, 'wb')
+                paramsFile.write(s)
+                paramsFile.close()
+            except ValueError:
+                continue
+    return 
+
+class runMarxan:
     def GET(self):
         try:
-            web.header('Content-Type','text/html') 
-            os.chdir("/home/ubuntu/workspace/marxan/Marxan243/MarxanData_unix") # so files can be found in the input.dat file
-            p = subprocess.Popen(["/home/ubuntu/workspace/marxan/Marxan243/MarxanData_unix/MarOpt_v243_Linux64"], stdout=subprocess.PIPE) 
+            #get the parameters to pass on to marxan
+            newParams = getQueryStringParams(web.ctx.query[1:])
+            #inject these into the input.dat file
+            injectRunParameters(newParams)
+            #set the current directory so files can be found in the input.dat file
+            os.chdir(MARXAN_EXECUTABLE_PATH) 
+            #run marxan using the passed parameters 
+            p = subprocess.Popen([MARXAN_EXECUTABLE_PATH + os.sep + MARXAN_EXECUTABLE_NAME], stdout=subprocess.PIPE) 
+            #get the results of the marxan run
             out, err = p.communicate()
         except subprocess.CalledProcessError as e:
             return "Marxan return code: " + str(e.returncode)
+        web.header('Content-Type','text/plain') 
         return out
 
 app = web.application(urls, locals()) 
