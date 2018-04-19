@@ -1,7 +1,7 @@
-#!/usr/bin/env python
+#!/home/ubuntu/anaconda2/bin/python
 # example call: https://db-server-blishten.c9users.io/marxan/webAPI/
-import sys, os, web, subprocess, urllib
-# import geopandas as gpd
+import sys, os, web, subprocess, urllib, pandas
+import geopandas as gpd
 MARXAN_EXECUTABLE_PATH = "/home/ubuntu/workspace/marxan/Marxan243/MarxanData_unix"
 MARXAN_EXECUTABLE_NAME = "MarOpt_v243_Linux64"
 MARXAN_INPUT_PARAMETER_FILENAME = "input.dat"
@@ -50,6 +50,14 @@ class runMarxan:
             p = subprocess.Popen([MARXAN_EXECUTABLE_PATH + os.sep + MARXAN_EXECUTABLE_NAME], stdout=subprocess.PIPE) 
             #get the results of the marxan run
             out, err = p.communicate()
+            #get the planning units as a GeoDataFrame
+            planning_units = gpd.read_file("/home/ubuntu/workspace/marxan/Marxan243/MarxanData_unix/pulayer1km.shp")
+            #get the summed solutions as a DataFrame
+            summed_solution = pandas.read_csv("/home/ubuntu/workspace/marxan/Marxan243/MarxanData_unix/output/output_ssoln.txt")
+            #join these datasets together 
+            summed_solution_shapes = planning_units.merge(summed_solution,left_on="PUID",right_on="planning_unit")
+            #write the results to a shapefile
+            summed_solution_shapes.to_file("/home/ubuntu/workspace/marxan/Marxan243/MarxanData_unix/output/results.shp")
         except subprocess.CalledProcessError as e:
             return "Marxan return code: " + str(e.returncode)
         web.header('Content-Type','text/plain') 
