@@ -75,9 +75,11 @@ class runMarxan:
             #iterate through each of the solutions and get the data
             solutionFiles = glob.glob(MARXAN_OUTPUT_FOLDER + "/output_r*")
             solutionDicts = {}
-            # for solution in solutions:
-            for f in solutionFiles:
-                solutionDicts.update({os.path.basename(f).split(".")[0] : json.loads(pandas.read_csv(f).to_json(orient='records'))})
+            # for solution in solutions if wanted
+            if "RETURNALL" in params.keys():
+                if (params["RETURNALL"]=='true'):
+                    for f in solutionFiles:
+                        solutionDicts.update({os.path.basename(f).split(".")[0] : json.loads(pandas.read_csv(f).to_json(orient='records'))})
             
             #add the other items
             solutionDicts['log'] = log
