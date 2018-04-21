@@ -1,13 +1,14 @@
 #!/home/ubuntu/anaconda2/bin/python
-# example call: https://db-server-blishten.c9users.io/marxan/webAPI/
-import sys, os, web, subprocess, urllib, pandas
+#the above line forces the CGI script to use the Anaconda Python interpreter
+import sys, os, web, subprocess, urllib, pandas, json
 import geopandas as gpd
-MARXAN_EXECUTABLE_PATH = "/home/ubuntu/workspace/marxan/Marxan243/MarxanData_unix"
-MARXAN_EXECUTABLE_NAME = "MarOpt_v243_Linux64"
-MARXAN_INPUT_PARAMETER_FILENAME = "input.dat"
+MARXAN_FOLDER = "/home/ubuntu/workspace/marxan/Marxan243/MarxanData_unix"
+MARXAN_EXECUTABLE = MARXAN_FOLDER + os.sep + "MarOpt_v243_Linux64"
+MARXAN_OUTPUT_FOLDER = MARXAN_FOLDER + os.sep + "output" + os.sep
+MARXAN_INPUT_PARAMETER_FILENAME = MARXAN_FOLDER + os.sep + "input.dat"
 
 urls = (
-  "/run", "runMarxan"
+  "/run", "runMarxan" # example call: https://db-server-blishten.c9users.io/marxan/webAPI/
   )
   
 def getQueryStringParams(querystring):
@@ -18,8 +19,8 @@ def getQueryStringParams(querystring):
 
 def injectRunParameters(newParams):
     if newParams:
-        #get the existing parameters
-        paramsFile = open(MARXAN_EXECUTABLE_PATH + os.sep + MARXAN_INPUT_PARAMETER_FILENAME, 'rb')
+        #get the existing parameters 
+        paramsFile = open(MARXAN_INPUT_PARAMETER_FILENAME, 'rb')
         s = paramsFile.read()
         paramsFile.close()
         #update any that are passed in as query params
@@ -30,39 +31,60 @@ def injectRunParameters(newParams):
                     p2 = s[p1:].index("\r\n") #get the position of the end of line
                     s = s[:p1] + k + " " + v + s[(p1 + p2):]
                 #write these parameters back to the input.dat file
-                paramsFile = open(MARXAN_EXECUTABLE_PATH + os.sep + MARXAN_INPUT_PARAMETER_FILENAME, 'wb')
+                paramsFile = open(MARXAN_INPUT_PARAMETER_FILENAME, 'wb')
                 paramsFile.write(s)
                 paramsFile.close()
             except ValueError:
                 continue
     return 
 
+def createShapefileWithResults():
+    #get the planning units as a GeoDataFrame
+    planning_units = gpd.read_file(MARXAN_FOLDER + os.sep + "pulayer1km.shp")
+    #get the summed solutions as a DataFrame
+    summed_solution = pandas.read_csv(MARXAN_OUTPUT_FOLDER + "output_ssoln.txt")
+    #join these datasets together 
+    summed_solution_shapes = planning_units.merge(summed_solution,left_on="PUID",right_on="planning_unit")
+    #write the results to a shapefile
+    summed_solution_shapes.to_file(MARXAN_OUTPUT_FOLDER + "results.shp")
+
 class runMarxan:
     def GET(self):
         try:
             #get the parameters to pass on to marxan
-            newParams = getQueryStringParams(web.ctx.query[1:])
+            params = getQueryStringParams(web.ctx.query[1:])
             #inject these into the input.dat file
-            injectRunParameters(newParams)
+            injectRunParameters(params)
             #set the current directory so files can be found in the input.dat file
-            os.chdir(MARXAN_EXECUTABLE_PATH) 
+            os.chdir(MARXAN_FOLDER) 
             #run marxan using the passed parameters 
-            p = subprocess.Popen([MARXAN_EXECUTABLE_PATH + os.sep + MARXAN_EXECUTABLE_NAME], stdout=subprocess.PIPE) 
+            p = subprocess.Popen([MARXAN_EXECUTABLE], stdout=subprocess.PIPE) 
             #get the results of the marxan run
-            out, err = p.communicate()
-            #get the planning units as a GeoDataFrame
-            planning_units = gpd.read_file("/home/ubuntu/workspace/marxan/Marxan243/MarxanData_unix/pulayer1km.shp")
-            #get the summed solutions as a DataFrame
-            summed_solution = pandas.read_csv("/home/ubuntu/workspace/marxan/Marxan243/MarxanData_unix/output/output_ssoln.txt")
-            #join these datasets together 
-            summed_solution_shapes = planning_units.merge(summed_solution,left_on="PUID",right_on="planning_unit")
-            #write the results to a shapefile
-            summed_solution_shapes.to_file("/home/ubuntu/workspace/marxan/Marxan243/MarxanData_unix/output/results.shp")
+            log, err = p.communicate()
+            
+            #create a shapefile with the results
+            #createShapefileWithResults()
+            
+            #get the best solution from all runs as a string
+            best = pandas.read_csv(MARXAN_OUTPUT_FOLDER + "output_best.txt").to_json(orient='records') 
+            
+            #get the summary information
+            sum = pandas.read_csv(MARXAN_OUTPUT_FOLDER + "output_sum.txt").to_json(orient='records') 
+            
+            #get the summed solution as a json string
+            ssoln = pandas.read_csv(MARXAN_OUTPUT_FOLDER + "output_ssoln.txt").to_json(orient='records') # or use 'split'
+            
         except subprocess.CalledProcessError as e:
             return "Marxan return code: " + str(e.returncode)
-        web.header('Content-Type','text/plain') 
-        return out
-        # return sys.path
+        
+        #web response
+        web.header('Content-Type','application/json') 
+        response = json.dumps({'log':log, 'best': json.loads(best),'sum':json.loads(sum), 'ssoln': json.loads(ssoln)})
+        #get the callback parameter for jsonp calls
+        if "CALLBACK" in params.keys():
+            return params["CALLBACK"] + "(" + response + ")"
+        else:
+            return response
 
 app = web.application(urls, locals()) 
 
