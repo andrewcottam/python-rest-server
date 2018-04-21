@@ -95,9 +95,15 @@ class loadSolution:
             return "No solution number"
         else:
             #get the content from the solution - this will be 'output_r00001.txt'
-            solution = pandas.read_csv(MARXAN_OUTPUT_FOLDER + "output_r00001.txt").to_json(orient='records') 
+            solution = pandas.read_csv(MARXAN_OUTPUT_FOLDER + "output_r" + "%05d" % (int(params["SOLUTION"]),)  + ".txt").to_json(orient='records') 
+            response = json.dumps(json.loads(solution))
             web.header('Content-Type','application/json') 
-            return json.dumps(json.loads(solution))
+            
+            #get the callback parameter for jsonp calls
+            if "CALLBACK" in params.keys():
+                return params["CALLBACK"] + "(" + response + ")"
+            else:
+                return response
         
 app = web.application(urls, locals()) 
 
