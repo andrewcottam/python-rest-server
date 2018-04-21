@@ -1,6 +1,6 @@
 #!/home/ubuntu/anaconda2/bin/python
 #the above line forces the CGI script to use the Anaconda Python interpreter
-import sys, os, web, subprocess, urllib, pandas, json
+import sys, os, web, subprocess, urllib, pandas, json, glob
 import geopandas as gpd
 MARXAN_FOLDER = "/home/ubuntu/workspace/marxan/Marxan243/MarxanData_unix"
 MARXAN_EXECUTABLE = MARXAN_FOLDER + os.sep + "MarOpt_v243_Linux64"
@@ -66,21 +66,30 @@ class runMarxan:
             #create a shapefile with the results
             #createShapefileWithResults()
             
-            #get the best solution from all runs as a string
-            best = pandas.read_csv(MARXAN_OUTPUT_FOLDER + "output_best.txt").to_json(orient='records') 
-            
             #get the summary information
             sum = pandas.read_csv(MARXAN_OUTPUT_FOLDER + "output_sum.txt").to_json(orient='records') 
             
             #get the summed solution as a json string
             ssoln = pandas.read_csv(MARXAN_OUTPUT_FOLDER + "output_ssoln.txt").to_json(orient='records') 
             
+            #iterate through each of the solutions and get the data
+            solutionFiles = glob.glob(MARXAN_OUTPUT_FOLDER + "/output_r*")
+            solutionDicts = {}
+            # for solution in solutions:
+            for f in solutionFiles:
+                solutionDicts.update({os.path.basename(f).split(".")[0] : json.loads(pandas.read_csv(f).to_json(orient='records'))})
+            
+            #add the other items
+            solutionDicts['log'] = log
+            solutionDicts['sum'] = json.loads(sum)
+            solutionDicts['ssoln'] = json.loads(ssoln)
+            
         except subprocess.CalledProcessError as e:
             return "Marxan return code: " + str(e.returncode)
         
         #web response
         web.header('Content-Type','application/json') 
-        response = json.dumps({'log':log, 'best': json.loads(best),'sum':json.loads(sum), 'ssoln': json.loads(ssoln)})
+        response = json.dumps(solutionDicts)
         #get the callback parameter for jsonp calls
         if "CALLBACK" in params.keys():
             return params["CALLBACK"] + "(" + response + ")"
