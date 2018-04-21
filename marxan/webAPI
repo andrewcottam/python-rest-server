@@ -8,7 +8,8 @@ MARXAN_OUTPUT_FOLDER = MARXAN_FOLDER + os.sep + "output" + os.sep
 MARXAN_INPUT_PARAMETER_FILENAME = MARXAN_FOLDER + os.sep + "input.dat"
 
 urls = (
-  "/run", "runMarxan" # example call: https://db-server-blishten.c9users.io/marxan/webAPI/
+  "/run", "runMarxan", # example call: https://db-server-blishten.c9users.io/marxan/webAPI/run
+  "/loadSolution", "loadSolution" # example call: https://db-server-blishten.c9users.io/marxan/webAPI/loadSolution
   )
   
 def getQueryStringParams(querystring):
@@ -72,7 +73,7 @@ class runMarxan:
             sum = pandas.read_csv(MARXAN_OUTPUT_FOLDER + "output_sum.txt").to_json(orient='records') 
             
             #get the summed solution as a json string
-            ssoln = pandas.read_csv(MARXAN_OUTPUT_FOLDER + "output_ssoln.txt").to_json(orient='records') # or use 'split'
+            ssoln = pandas.read_csv(MARXAN_OUTPUT_FOLDER + "output_ssoln.txt").to_json(orient='records') 
             
         except subprocess.CalledProcessError as e:
             return "Marxan return code: " + str(e.returncode)
@@ -86,6 +87,18 @@ class runMarxan:
         else:
             return response
 
+class loadSolution:
+    def GET(self):
+        #get the parameters to pass on to marxan
+        params = getQueryStringParams(web.ctx.query[1:])
+        if not params:
+            return "No solution number"
+        else:
+            #get the content from the solution - this will be 'output_r00001.txt'
+            solution = pandas.read_csv(MARXAN_OUTPUT_FOLDER + "output_r00001.txt").to_json(orient='records') 
+            web.header('Content-Type','application/json') 
+            return json.dumps(json.loads(solution))
+        
 app = web.application(urls, locals()) 
 
 if __name__ == "__main__":
