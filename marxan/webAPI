@@ -49,6 +49,13 @@ def createShapefileWithResults():
     #write the results to a shapefile
     summed_solution_shapes.to_file(MARXAN_OUTPUT_FOLDER + "results.shp")
 
+def deleteAllFiles(folder):
+    files = glob.glob(folder + "*")
+    for f in files:
+        os.remove(f)
+
+#runs marxan and returns the sum of solutions, summary info on all runs and the log
+# optionally returns the data from all the individual runs (if the returnall=true parameter is set)
 class runMarxan:
     def GET(self):
         try:
@@ -58,6 +65,8 @@ class runMarxan:
             injectRunParameters(params)
             #set the current directory so files can be found in the input.dat file
             os.chdir(MARXAN_FOLDER) 
+            #delete all of the current output files
+            deleteAllFiles(MARXAN_OUTPUT_FOLDER)
             #run marxan using the passed parameters 
             p = subprocess.Popen([MARXAN_EXECUTABLE], stdout=subprocess.PIPE) 
             #get the results of the marxan run
@@ -98,6 +107,7 @@ class runMarxan:
         else:
             return response
 
+#for loading each individual solution - pass the solution number as solution=1
 class loadSolution:
     def GET(self):
         #get the parameters to pass on to marxan
