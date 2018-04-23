@@ -153,12 +153,13 @@ class postFile:
             paramsFile.write(data.value)
             paramsFile.close()
             
-            #delete the file if it already exists
-            if os.path.exists(MARXAN_INPUT_FOLDER + data.marxanfile):
-                os.remove(MARXAN_INPUT_FOLDER + data.marxanfile)
-                
-            #rename the file
-            os.rename(MARXAN_INPUT_FOLDER + data.filename, MARXAN_INPUT_FOLDER + data.marxanfile)
+            #if the filename is not the same as the marxanfile then we need to delete the existing marxanfile and replace it with the uploaded file
+            if (data.filename != data.marxanfile):
+                #delete the file if it already exists
+                if os.path.exists(MARXAN_INPUT_FOLDER + data.marxanfile):
+                    os.remove(MARXAN_INPUT_FOLDER + data.marxanfile)
+                #rename the file
+                os.rename(MARXAN_INPUT_FOLDER + data.filename, MARXAN_INPUT_FOLDER + data.marxanfile)
             
             return "Complete"
         
