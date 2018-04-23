@@ -6,12 +6,18 @@ MARXAN_FOLDER = "/home/ubuntu/workspace/marxan/Marxan243/MarxanData_unix"
 MARXAN_EXECUTABLE = MARXAN_FOLDER + os.sep + "MarOpt_v243_Linux64"
 MARXAN_OUTPUT_FOLDER = MARXAN_FOLDER + os.sep + "output" + os.sep
 MARXAN_INPUT_PARAMETER_FILENAME = MARXAN_FOLDER + os.sep + "input.dat"
+MARXAN_INPUT_FOLDER = MARXAN_FOLDER + os.sep + "input" + os.sep
 
 urls = (
-  "/run", "runMarxan", # example call: https://db-server-blishten.c9users.io/marxan/webAPI/run
-  "/loadSolution", "loadSolution" # example call: https://db-server-blishten.c9users.io/marxan/webAPI/loadSolution
+  "/run", "runMarxan", # example call: https://db-server-blishten.c9users.io/marxan/webAPI/runMarxan?numReps=10&returnall=true&verbosity=3
+  "/loadSolution", "loadSolution", # example call: https://db-server-blishten.c9users.io/marxan/webAPI/loadSolution?solution=3
+  "/postFile","postFile" #for uploading the files required for marxan to run
   )
-  
+ 
+class MarxanServicesError(Exception):
+    """Exception Class that allows the Marxan Services REST Server to raise custom exceptions"""
+    pass
+
 def getQueryStringParams(querystring):
     if len(querystring):
         return dict([(q.split("=")[0].upper(), urllib.unquote(q.split("=")[1])) for q in querystring.split("&")])
@@ -59,6 +65,8 @@ def deleteAllFiles(folder):
 class runMarxan:
     def GET(self):
         try:
+            #initialise the response dictionary
+            responseDict = {}
             #get the parameters to pass on to marxan
             params = getQueryStringParams(web.ctx.query[1:])
             #inject these into the input.dat file
@@ -76,6 +84,9 @@ class runMarxan:
             #createShapefileWithResults()
             
             #get the summary information
+            if not (os.path.exists(MARXAN_OUTPUT_FOLDER + "output_sum.txt")):
+                #no output files so something must have gone wrong
+                raise MarxanServicesError("No output files were generated")
             sum = pandas.read_csv(MARXAN_OUTPUT_FOLDER + "output_sum.txt").to_json(orient='records') 
             
             #get the summed solution as a json string
@@ -83,29 +94,30 @@ class runMarxan:
             
             #iterate through each of the solutions and get the data
             solutionFiles = glob.glob(MARXAN_OUTPUT_FOLDER + "/output_r*")
-            solutionDicts = {}
             # for solution in solutions if wanted
             if "RETURNALL" in params.keys():
                 if (params["RETURNALL"]=='true'):
                     for f in solutionFiles:
-                        solutionDicts.update({os.path.basename(f).split(".")[0] : json.loads(pandas.read_csv(f).to_json(orient='records'))})
+                        responseDict.update({os.path.basename(f).split(".")[0] : json.loads(pandas.read_csv(f).to_json(orient='records'))})
             
             #add the other items
-            solutionDicts['log'] = log
-            solutionDicts['sum'] = json.loads(sum)
-            solutionDicts['ssoln'] = json.loads(ssoln)
+            responseDict['log'] = log
+            responseDict['sum'] = json.loads(sum)
+            responseDict['ssoln'] = json.loads(ssoln)
             
-        except subprocess.CalledProcessError as e:
-            return "Marxan return code: " + str(e.returncode)
-        
-        #web response
-        web.header('Content-Type','application/json') 
-        response = json.dumps(solutionDicts)
-        #get the callback parameter for jsonp calls
-        if "CALLBACK" in params.keys():
-            return params["CALLBACK"] + "(" + response + ")"
-        else:
-            return response
+        except (MarxanServicesError) as e:
+            responseDict['log'] = log
+            responseDict['error'] = e.message
+
+        finally:
+            #web response
+            web.header('Content-Type','application/json') 
+            response = json.dumps(responseDict)
+            #get the callback parameter for jsonp calls
+            if "CALLBACK" in params.keys():
+                return params["CALLBACK"] + "(" + response + ")"
+            else:
+                return response
 
 #for loading each individual solution - pass the solution number as solution=1
 class loadSolution:
@@ -125,6 +137,34 @@ class loadSolution:
                 return params["CALLBACK"] + "(" + response + ")"
             else:
                 return response
+
+#saves an uploaded file to the input folder where it can be used in the marxan run
+class postFile:
+    def POST(self):
+        try:
+            data = web.input()
+            #there will be 3 variables in the data: 
+            # marxanfile    = the type of marxan file being uploaded (spec.dat, pu.dat, puvspr.dat, bound.dat, blockdef.dat)
+            # value         = the content of the file
+            # filename      = the filename of the uploaded file
+            
+            #write these parameters back to the input.dat file
+            paramsFile = open(MARXAN_INPUT_FOLDER + data.filename, 'wb')
+            paramsFile.write(data.value)
+            paramsFile.close()
+            
+            #delete the file if it already exists
+            if os.path.exists(MARXAN_INPUT_FOLDER + data.marxanfile):
+                os.remove(MARXAN_INPUT_FOLDER + data.marxanfile)
+                
+            #rename the file
+            os.rename(MARXAN_INPUT_FOLDER + data.filename, MARXAN_INPUT_FOLDER + data.marxanfile)
+            
+            return "Complete"
+        
+        except (MarxanServicesError):
+            web.header("Content-Type", "text/html")
+            return str(sys.exc_info())   
         
 app = web.application(urls, locals()) 
 
