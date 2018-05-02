@@ -60,6 +60,12 @@ def deleteAllFiles(folder):
     for f in files:
         os.remove(f)
 
+def getInputFolder(username):
+    return MARXAN_FOLDER + os.sep + username + os.sep + "input" + os.sep
+
+def getOutputFolder(username):
+    return MARXAN_FOLDER + os.sep + username + os.sep + "outpu" + os.sep
+
 #runs marxan and returns the sum of solutions, summary info on all runs and the log
 # optionally returns the data from all the individual runs (if the returnall=true parameter is set)
 class runMarxan:
@@ -83,7 +89,7 @@ class runMarxan:
             #create a shapefile with the results
             #createShapefileWithResults()
             
-            #get the summary information
+            #get the summary information for all solutions
             if not (os.path.exists(MARXAN_OUTPUT_FOLDER + "output_sum.txt")):
                 #no output files so something must have gone wrong
                 raise MarxanServicesError("No output files were generated")
@@ -100,14 +106,11 @@ class runMarxan:
                     for f in solutionFiles:
                         responseDict.update({os.path.basename(f).split(".")[0] : json.loads(pandas.read_csv(f).to_json(orient='records'))})
             
-            #add the other items
-            responseDict['log'] = log
-            responseDict['sum'] = json.loads(sum)
-            responseDict['ssoln'] = json.loads(ssoln)
+            #add the other items to the response
+            responseDict.update({'log': log, 'sum':json.loads(sum),'ssoln':json.loads(ssoln)})
             
         except (MarxanServicesError) as e:
-            responseDict['log'] = log
-            responseDict['error'] = e.message
+            responseDict.update({'log': log, 'error': e.message})
 
         finally:
             #web response
