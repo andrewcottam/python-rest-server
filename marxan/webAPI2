@@ -465,7 +465,7 @@ class loadSolution:
             #get the content from the solution - this will be 'output_r00001.txt'
             solutionFile = output_folder + "output_r" + "%05d" % (int(params["SOLUTION"]),)  + ".txt"
             try:
-                solution = pandas.read_csv(solutionFile).to_json(orient='records') 
+                solution = pandas.read_csv(solutionFile).to_json(orient='values') 
             except (IOError):
                 raise MarxanServicesError("Solution not found")
             response.update({'solution': json.loads(solution)})
