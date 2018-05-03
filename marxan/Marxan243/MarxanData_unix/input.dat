@@ -9,7 +9,7 @@ General Parameters
 BLM 1
 PROP 0.5
 RANDSEED -1
-NUMREPS 10
+NUMREPS 100
 
 Annealing Parameters
 NUMITNS 1000000
@@ -50,4 +50,5 @@ VERBOSITY 3
 
 SAVESOLUTIONSMATRIX 3
 DESCRIPTION No description
-MAPID 
+CREATEDATE 
+MAPID planning_units_3857_visible_a-0vmt87

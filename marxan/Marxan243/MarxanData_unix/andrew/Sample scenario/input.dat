@@ -23,10 +23,10 @@ THRESHPEN2  1.00000000000000E+0000
 
 Input Files
 INPUTDIR input
-PUNAME pu.dat
-SPECNAME spec.dat
-PUVSPRNAME puvspr.dat
-BOUNDNAME bound.dat
+PUNAME pu_orig.dat
+SPECNAME spec_orig.dat
+PUVSPRNAME puvspr_orig.dat
+BOUNDNAME bound_orig.dat
 
 Save Files
 SCENNAME output
@@ -50,4 +50,5 @@ VERBOSITY 3
 
 SAVESOLUTIONSMATRIX 3
 DESCRIPTION Sample scenario using the Marxan sample data
-MAPID 
+CREATEDATE Thu, 03 May 2018 08:02:10
+MAPID blishten.3ogmvag8

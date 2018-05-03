@@ -2,6 +2,7 @@
 ## Project specific
 #################
 
+marxan/Marxan243/MarxanData_unix/*
 cgi-bin/resources.py
 backup/
 php.ini

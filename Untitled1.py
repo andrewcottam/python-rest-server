@@ -45,10 +45,12 @@ def getInputParameter(filename, parameter):
                 return s[p1 + p2 + 1:p1 + p3]
         
 
+#updates the parameters in the *.dat file with the new parameters passed as a dict
 def updateParameters(data_file, newParams):
     if newParams:
         #get the existing parameters 
         s = readFile(data_file)
+        print s
         #update any that are passed in as query params
         for k, v in newParams.iteritems():
             try:
@@ -63,7 +65,6 @@ def updateParameters(data_file, newParams):
     return 
 
 user_folder = MARXAN_FOLDER + "andrew/user.dat"
+f = MARXAN_FOLDER + "andrew/Sample scenario/input.dat"
 
-print getInputParameter(MARXAN_FOLDER + "input.dat","LASTSCENARIO")
-print getInputParameter(MARXAN_FOLDER + "andrew/user.dat","LASTSCENARIO")
-
+print updateParameters(f, {"MAPID":"wibble"})

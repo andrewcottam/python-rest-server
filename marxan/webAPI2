@@ -1,6 +1,6 @@
 #!/home/ubuntu/anaconda2/bin/python
 #the above line forces the CGI script to use the Anaconda Python interpreter
-import sys, os, web, subprocess, urllib, pandas, json, glob, shutil, re
+import sys, os, web, subprocess, urllib, pandas, json, glob, shutil, re, datetime
 import geopandas as gpd
 from collections import OrderedDict
 from shutil import copyfile
@@ -22,7 +22,8 @@ urls = (
   "/renameScenario", "renameScenario",
   "/runMarxan", "runMarxan", 
   "/loadSolution", "loadSolution", 
-  "/postFile","postFile"
+  "/postFile","postFile",
+  "/updateParameter","updateParameter"
   )
  
 class MarxanServicesError(Exception):
@@ -78,7 +79,7 @@ def getInputParameters(filename):
     #instantiate the return arrays
     paramsArray = []
     filesDict = {}
-    metadataArray = []
+    metadataDict = {}
     #get all the parameter keys
     matches = re.findall('\\n[A-Z1-9]{2,}', s, re.DOTALL)
     #iterate through the keys and get their values
@@ -90,11 +91,11 @@ def getInputParameters(filename):
         elif m[1:] in ['BLM', 'PROP', 'RANDSEED', 'NUMREPS', 'NUMITNS', 'STARTTEMP', 'NUMTEMP', 'COSTTHRESH', 'THRESHPEN1', 'THRESHPEN2', 'SAVERUN', 'SAVEBEST', 'SAVESUMMARY', 'SAVESCEN', 'SAVETARGMET', 'SAVESUMSOLN', 'SAVEPENALTY', 'SAVELOG', 'RUNMODE', 'MISSLEVEL', 'ITIMPTYPE', 'HEURTYPE', 'CLUMPTYPE', 'VERBOSITY', 'SAVESOLUTIONSMATRIX']:
             key, value = getKeyValue(s, m)
             paramsArray.append({'key': key, 'value': value})
-        elif m[1:] in ['DESCRIPTION','MAPID']:
+        elif m[1:] in ['DESCRIPTION','CREATEDATE','MAPID']:
             key, value = getKeyValue(s, m)
-            metadataArray.append({'key': key, 'value': value})
+            metadataDict.update({key: value})
                         
-    return filesDict,paramsArray, metadataArray
+    return filesDict,paramsArray, metadataDict
     
 #updates the parameters in the *.dat file with the new parameters passed as a dict
 def updateParameters(data_file, newParams):
@@ -187,6 +188,8 @@ def getUsers():
 def getScenarios(user):
     #get a list of folders underneath the users home folder
     scenario_folders = glob.glob(MARXAN_FOLDER + user + os.sep + "*/")
+    #sort the folders
+    scenario_folders.sort()
     scenarios = []
     #iterate through the scenario folders and get the parameters for each scenario to return
     for dir in scenario_folders:
@@ -195,12 +198,10 @@ def getScenarios(user):
         #get the data from the input file
         s = readFile(dir + 'input.dat')
         #get the description
-        if "DESCRIPTION " in s:
-            desc = getInputParameter(dir + 'input.dat',"DESCRIPTION")
-        else:
-            desc = 'No description'
+        desc = getInputParameter(dir + 'input.dat',"DESCRIPTION")
+        createDate = getInputParameter(dir + 'input.dat',"CREATEDATE")
         #create a dict to save the data
-        scenarios.append({'name':scenario,'description':desc})
+        scenarios.append({'name':scenario,'description':desc,'createdate': createDate})
     return scenarios
 
 def createEmptyScenario(input_folder, output_folder,scenario_folder, description):
@@ -209,8 +210,8 @@ def createEmptyScenario(input_folder, output_folder,scenario_folder, description
     os.makedirs(output_folder)
     #copy in the required files
     copyfile(MARXAN_FOLDER + 'input.dat.empty', scenario_folder + 'input.dat')
-    #update the description parameter in the input.dat file
-    updateParameters(scenario_folder + "input.dat", {'DESCRIPTION': description})
+    #update the description and creation date parameters in the input.dat file
+    updateParameters(scenario_folder + "input.dat", {'DESCRIPTION': description, 'CREATEDATE': datetime.datetime.now().strftime("%a, %d %b %Y %H:%M:%S")})
 
 def checkScenarioExists(scenario_folder):
     if not (os.path.exists(scenario_folder)):
@@ -249,7 +250,7 @@ class createUser():
             #create the folders for the scenario and copy the input.dat file
             createEmptyScenario(input_folder, output_folder,scenario_folder,"Sample scenario using the Marxan sample data")
             #update the input.dat file with information on the input files
-            updateParameters(scenario_folder + "input.dat", {'PUNAME': 'pu.dat','SPECNAME': 'spec.dat','PUVSPRNAME': 'puvspr.dat','BOUNDNAME': 'bound.dat'})
+            updateParameters(scenario_folder + "input.dat", {'PUNAME': 'pu.dat','SPECNAME': 'spec.dat','PUVSPRNAME': 'puvspr.dat','BOUNDNAME': 'bound.dat','MAPID':'planning_units_3857_visible_a-0vmt87'})
             #copy the sample scenario files into the input folder
             copyfile(MARXAN_INPUT_FOLDER + 'bound_orig.dat', input_folder + 'bound.dat')
             copyfile(MARXAN_INPUT_FOLDER + 'pu_orig.dat', input_folder + 'pu.dat')
@@ -279,6 +280,7 @@ class getUser():
             #get the lastscenario from the user.dat file
             lastScenario = getInputParameter(user_folder + "user.dat", "LASTSCENARIO")
             
+            #set the response
             response.update({'info': "User data received", "lastScenario" : lastScenario})
 
         except (MarxanServicesError) as e:
@@ -333,16 +335,20 @@ class createScenario():
         try:
             #initialise the request objects
             user_folder, scenario_folder, input_folder, output_folder, response, params = initialiseGetRequest(web.ctx.query[1:])
+
             #check the scenario doesnt already exist
             if (os.path.exists(scenario_folder)):
                 raise MarxanServicesError("Scenario '" + params["SCENARIO"] + "' already exists") 
+
             #get the description
             if "DESCRIPTION" in params.keys():
                 description = params["DESCRIPTION"]
             else:
                 description = "No description"
+
             #create the folders for the scenario and copy the input.dat file
             createEmptyScenario(input_folder, output_folder,scenario_folder, description)
+
             #set the response
             response.update({'info': "Scenario '" + params["SCENARIO"] + "' created", 'name': params["SCENARIO"], 'description': description})
 
@@ -393,6 +399,9 @@ class renameScenario():
 
             #add the other items to the response
             response.update({"info": "Scenario renamed to '" + params["NEWNAME"] + "'", 'scenario':params["NEWNAME"]})
+            
+            #set the new name as the users last scenario so it will load on login
+            updateParameters(user_folder + "user.dat", {'LASTSCENARIO': params['NEWNAME']})
             
         except (MarxanServicesError) as e:
             response.update({'error': e.message})
@@ -504,6 +513,29 @@ class postFile:
         finally:
             return getResponse({}, response)
 
+#updates a parameter in the input.dat file directly, e.g. for updating the MAPID after the user sets their source spatial data
+    #https://db-server-blishten.c9users.io/marxan/webAPI2/updateParameter?user=andrew&scenario=Sample%20scenario&parameter=MAPID&value=wibble&callback=__jp2
+class updateParameter:
+    def GET(self):
+        try:
+            #initialise the request objects
+            user_folder, scenario_folder, input_folder, output_folder, response, params = initialiseGetRequest(web.ctx.query[1:])
+            if "USER" not in params.keys():
+                raise MarxanServicesError("No user parameter")
+            if "SCENARIO" not in params.keys():
+                raise MarxanServicesError("No scenario parameter")
+            if "PARAMETER" not in params.keys():
+                raise MarxanServicesError("No parameter name")
+            if "VALUE" not in params.keys():
+                raise MarxanServicesError("No parameter value")
+            updateParameters(scenario_folder + "input.dat", {params["PARAMETER"]: params["VALUE"]})
+            response.update({'info': "Parameter updated"})
+            
+        except (MarxanServicesError) as e:
+            response.update({'error': e.message})
+
+        finally:
+            return getResponse(params, response)
 
 app = web.application(urls, locals()) 
 
