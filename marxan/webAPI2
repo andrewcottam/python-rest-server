@@ -250,7 +250,7 @@ class createUser():
             #create the folders for the scenario and copy the input.dat file
             createEmptyScenario(input_folder, output_folder,scenario_folder,"Sample scenario using the Marxan sample data")
             #update the input.dat file with information on the input files
-            updateParameters(scenario_folder + "input.dat", {'PUNAME': 'pu.dat','SPECNAME': 'spec.dat','PUVSPRNAME': 'puvspr.dat','BOUNDNAME': 'bound.dat','MAPID':'planning_units_3857_visible_a-0vmt87'})
+            updateParameters(scenario_folder + "input.dat", {'PUNAME': 'pu.dat','SPECNAME': 'spec.dat','PUVSPRNAME': 'puvspr.dat','BOUNDNAME': 'bound.dat','MAPID':'blishten.3ogmvag8'})
             #copy the sample scenario files into the input folder
             copyfile(MARXAN_INPUT_FOLDER + 'bound_orig.dat', input_folder + 'bound.dat')
             copyfile(MARXAN_INPUT_FOLDER + 'pu_orig.dat', input_folder + 'pu.dat')
@@ -431,10 +431,10 @@ class runMarxan:
             if not (os.path.exists(output_folder + "output_sum.txt")):
                 #no output files so something must have gone wrong
                 raise MarxanServicesError("No output files were generated - check the Marxan log")
-            sum = pandas.read_csv(output_folder + "output_sum.txt").to_json(orient='records') 
+            sum = pandas.read_csv(output_folder + "output_sum.txt").to_json(orient='values') 
             
             #get the summed solution as a json string
-            ssoln = pandas.read_csv(output_folder + "output_ssoln.txt").to_json(orient='records') 
+            ssoln = pandas.read_csv(output_folder + "output_ssoln.txt").to_json(orient='values') 
             
             #iterate through each of the solutions and get the data
             solutionFiles = glob.glob(output_folder + "/output_r*")
@@ -442,7 +442,7 @@ class runMarxan:
             if "RETURNALL" in params.keys():
                 if (params["RETURNALL"]=='true'):
                     for f in solutionFiles:
-                        response.update({os.path.basename(f).split(".")[0] : json.loads(pandas.read_csv(f).to_json(orient='records'))})
+                        response.update({os.path.basename(f).split(".")[0] : json.loads(pandas.read_csv(f).to_json(orient='values'))})
             
             #add the other items to the response
             response.update({'log': log, 'sum':json.loads(sum),'ssoln':json.loads(ssoln)})
