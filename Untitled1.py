@@ -1,7 +1,5 @@
-import pandas
-df = pandas.read_csv("/home/ubuntu/workspace/marxan/Marxan243/MarxanData_unix/andrew/PNG Scenario/output/output_ssoln.txt",nrows=10)
-print df.to_json(orient='split') 
-print df.to_json(orient='records') 
-print df.to_json(orient='index') 
-print df.to_json(orient='columns') 
-print df.to_json(orient='values') 
+import pandas, json
+df= pandas.read_csv("/home/ubuntu/workspace/marxan/Marxan243/MarxanData_unix/andrew/Sample scenario/output/output_ssoln.txt").pivot(index='number',columns='planning_unit',values='planning_unit')
+transposed = df[df.columns].apply(lambda x: ','.join(x.dropna().astype(int).astype(str)),axis=1)
+ssoln = [[i,[int(n) for n in j.split(",")]] for (i,j) in transposed.items()]
+print json.loads(json.dumps(ssoln))
