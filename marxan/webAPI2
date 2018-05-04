@@ -217,6 +217,13 @@ def checkScenarioExists(scenario_folder):
     if not (os.path.exists(scenario_folder)):
         raise MarxanServicesError("Scenario '" + scenario_folder[scenario_folder[:-1].rindex("/") + 1:-1] + "' does not exist")     
 
+#reads in the text file and transforms the data so that each row has: <number of solutions>, <puid array>
+def getVectorTileOptimisedOutput(csvFile, columnName):
+    df= pandas.read_csv(csvFile).pivot(index=columnName,columns='planning_unit',values='planning_unit') #pivots the data
+    transposed = df[df.columns].apply(lambda x: ','.join(x.dropna().astype(int).astype(str)),axis=1) #joins the multiple columns to produce a comma-separated string of PUIDs with the number
+    arr = [[i,[int(n) for n in j.split(",")]] for (i,j) in transposed.items()][1:] #convert to an array of arrays and skip the first item as this one is all of the planning units which do not occur in any solution and dont need to be mapped
+    return json.loads(json.dumps(arr))
+
 #list users for the marxan server
     #https://db-server-blishten.c9users.io/marxan/webAPI2/listUsers?callback=__jp2
 class listUsers():
@@ -431,23 +438,22 @@ class runMarxan:
             if not (os.path.exists(output_folder + "output_sum.txt")):
                 #no output files so something must have gone wrong
                 raise MarxanServicesError("No output files were generated - check the Marxan log")
+            #read the data from the text file
             sum = pandas.read_csv(output_folder + "output_sum.txt").to_json(orient='values') 
             
             #get the summed solution as a json string
-            df= pandas.read_csv(output_folder + "output_ssoln.txt").pivot(index='number',columns='planning_unit',values='planning_unit') #pivots the data
-            transposed = df[df.columns].apply(lambda x: ','.join(x.dropna().astype(int).astype(str)),axis=1) #joins the multiple columns to produce a comma-separated string of PUIDs with the number
-            ssoln = [[i,[int(n) for n in j.split(",")]] for (i,j) in transposed.items()] #convert to an array of arrays
+            ssoln = getVectorTileOptimisedOutput(output_folder + "output_ssoln.txt", "number")
             
-            #iterate through each of the solutions and get the data
-            solutionFiles = glob.glob(output_folder + "/output_r*")
             # for solution in solutions if wanted
             if "RETURNALL" in params.keys():
+                #iterate through each of the solutions and get the data
+                solutionFiles = glob.glob(output_folder + "/output_r*")
                 if (params["RETURNALL"]=='true'):
                     for f in solutionFiles:
                         response.update({os.path.basename(f).split(".")[0] : json.loads(pandas.read_csv(f).to_json(orient='values'))})
             
             #add the other items to the response
-            response.update({'log': log, 'sum':json.loads(sum),'ssoln':json.loads(json.dumps(ssoln))})
+            response.update({'log': log, 'sum':json.loads(sum),'ssoln': ssoln})
             
         except (MarxanServicesError) as e:
             response.update({'error': e.message, 'log': log})
@@ -464,13 +470,16 @@ class loadSolution:
             user_folder, scenario_folder, input_folder, output_folder, response, params = initialiseGetRequest(web.ctx.query[1:])
             if "SOLUTION" not in params.keys():
                 raise MarxanServicesError("No solution parameter")
+                
             #get the content from the solution - this will be 'output_r00001.txt'
             solutionFile = output_folder + "output_r" + "%05d" % (int(params["SOLUTION"]),)  + ".txt"
             try:
-                solution = pandas.read_csv(solutionFile).to_json(orient='values') 
+                solution = getVectorTileOptimisedOutput(solutionFile, "solution")
+                
             except (IOError):
                 raise MarxanServicesError("Solution not found")
-            response.update({'solution': json.loads(solution)})
+                
+            response.update({'solution': solution})
                 
         except (MarxanServicesError) as e:
             response.update({'error': e.message})
