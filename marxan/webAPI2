@@ -145,15 +145,24 @@ def initialiseGetRequest(queryString):
     user_folder, scenario_folder, input_folder, output_folder = getFolders(params['USER'], params['SCENARIO'])
     return user_folder, scenario_folder, input_folder, output_folder, response, params
 
-#initialises the rest request and response from a POST request
-# 1. initialises a response dict which is used to populate the response information
-# 2. sets the user, scenario, input and output folders for the user 
+#initialises the folders from a POST request
 def initialisePostRequest(data):
-    #initialise the response dictionary
-    response = {}
-    #get the user, scenario, input and output folders
-    user_folder, scenario_folder, input_folder, output_folder = getFolders(data.user, data.scenario)
-    return user_folder, scenario_folder, input_folder, output_folder, response
+    try:
+        #check the user parameter
+        if not ("user" in data.keys()):
+            raise MarxanServicesError("No user parameter found")
+
+        #check the scenario parameter
+        if not ("scenario" in data.keys()):
+            raise MarxanServicesError("No scenario parameter found")
+
+        #get the user, scenario, input and output folders
+        user_folder, scenario_folder, input_folder, output_folder = getFolders(data.user, data.scenario)
+        
+    except (MarxanServicesError) as e:
+        raise
+        
+    return user_folder, scenario_folder, input_folder, output_folder
     
 def getFolders(user, scenario):
     user_folder = MARXAN_FOLDER + user + os.sep
@@ -241,36 +250,57 @@ class listUsers():
             return getResponse(params, response)
 
 #create a new user for marxan server
-    #https://db-server-blishten.c9users.io/marxan/webAPI2/createUser?user=andrew&callback=__jp2
 class createUser():
-    def GET(self):
+    def POST(self):
         try:
-            #initialise the request objects
-            user_folder, scenario_folder, input_folder, output_folder, response, params = initialiseGetRequest(web.ctx.query[1:])
+            #there will be  variables in the data: 
+            # user          = the user to create
+            # scenario      = the name of the scenario to create - for a new user this will always be 'Sample scenario'
+            
+            #get the data from the POST request
+            data = web.input()
+
+            #error checking
+            for key in ["password", "name", "email", "mapboxpk"]:
+                if key not in data.keys():
+                    raise MarxanServicesError("No " + key + " parameter")
+
+            #get the various folders
+            user_folder, scenario_folder, input_folder, output_folder = initialisePostRequest(data)
+                        
             #get the users
             users = getUsers()
+            
             #get the user to be created
-            user = params['USER']
+            user = data.user
+            
             #see if the user already exists
             if user in users:
                 raise MarxanServicesError("User '" + user + "' already exists")
+                
             #create the folders for the scenario and copy the input.dat file
             createEmptyScenario(input_folder, output_folder,scenario_folder,"Sample scenario using the Marxan sample data")
             #update the input.dat file with information on the input files
             updateParameters(scenario_folder + "input.dat", {'PUNAME': 'pu.dat','SPECNAME': 'spec.dat','PUVSPRNAME': 'puvspr.dat','BOUNDNAME': 'bound.dat','MAPID':'blishten.3ogmvag8'})
+
             #copy the sample scenario files into the input folder
             copyfile(MARXAN_INPUT_FOLDER + 'bound_orig.dat', input_folder + 'bound.dat')
             copyfile(MARXAN_INPUT_FOLDER + 'pu_orig.dat', input_folder + 'pu.dat')
             copyfile(MARXAN_INPUT_FOLDER + 'puvspr_orig.dat', input_folder + 'puvspr.dat')
             copyfile(MARXAN_INPUT_FOLDER + 'spec_orig.dat', input_folder + 'spec.dat')
             copyfile(MARXAN_FOLDER + 'user.dat', user_folder + 'user.dat')
-            response.update({'info': "User '" + user + "' created"})
 
+            #update the user.dat file with information from the POST request
+            updateParameters(user_folder + "user.dat", {'NAME': data.name,'EMAIL': data.email,'PASSWORD': data.password,'MAPBOXPK': data.mapboxpk})
+            
+            #write the response
+            response = {'info': "User '" + user + "' created"}
+            
         except (MarxanServicesError) as e:
-            response.update({'error': e.message})
+            response = {'error': e.message}
 
         finally:
-            return getResponse(params, response)
+            return getResponse({}, response)
     
 #gets a users information from the user folder
     #https://db-server-blishten.c9users.io/marxan/webAPI2/getUser?user=asd&callback=__jp2
@@ -498,15 +528,9 @@ class postFile:
             # user          = the currently logged on user
             # scenario      = the scenario name
             data = web.input()
-            #get the user parameter
-            if not ("user" in data.keys()):
-                raise MarxanServicesError("No user parameter found")
 
-            #get the scenario parameter
-            if not ("scenario" in data.keys()):
-                raise MarxanServicesError("No scenario parameter found")
             #get the appropriate folders
-            user_folder, scenario_folder, input_folder, output_folder, response = initialisePostRequest(data)
+            user_folder, scenario_folder, input_folder, output_folder = initialisePostRequest(data)
             
             #write the file to the input folder
             writeFile(input_folder + data.filename, data.value)
@@ -515,11 +539,10 @@ class postFile:
             updateParameters(scenario_folder + "input.dat", {data.parameter: data.filename})
             
             #write the response
-            response = ({'info': "File '" + data.filename + "' uploaded", 'file': data.filename})
+            response = {'info': "File '" + data.filename + "' uploaded", 'file': data.filename}
             
-        except (MarxanServicesError):
-            web.header("Content-Type", "text/html")
-            return str(sys.exc_info())   
+        except (MarxanServicesError) as e:
+            response = {'error': e.message}
 
         finally:
             return getResponse({}, response)
