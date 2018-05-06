@@ -14,6 +14,8 @@ MARXAN_INPUT_FOLDER = MARXAN_FOLDER + "input" + os.sep
 urls = (
   "/listUsers", "listUsers",
   "/createUser", "createUser",
+  "/validateUser","validateUser",
+  "/resendPassword","resendPassword",
   "/getUser","getUser",
   "/listScenarios", "listScenarios",
   "/getScenario","getScenario",
@@ -51,7 +53,7 @@ def readFile(filename):
 def getKeyValue(text, parameterName):
     p1 = text.index(parameterName)
     value = text[p1 + len(parameterName) + 1:text.index("\r",p1)]
-    return parameterName[1:], value
+    return parameterName, value
 
 #gets the position of the end of the line which may be different in windows/unix generated files
 def getEndOfLine(text):
@@ -72,30 +74,50 @@ def getInputParameter(filename, parameter):
             p3 = getEndOfLine(s[p1:]) #get the position of the end of line
             if p3 > 0:
                 return s[p1 + p2 + 1:p1 + p3]
-        
-def getInputParameters(filename):
+
+def getKeys(s):
+    #instantiate the return arrays
+    keys = []
+    #get all the parameter keys
+    matches = re.findall('\\n[A-Z1-9]{2,}', s, re.DOTALL)
+    return [m[1:] for m in matches]
+  
+def getUserData(filename):
+    returnDict = {}
     #get the file contents
     s = readFile(filename)
+    #get the keys from the file
+    keys = getKeys(s)
+    #iterate through the keys and get their values
+    for k in keys:
+        key, value = getKeyValue(s, k)
+        #update the return dict
+        returnDict.update({ key:  value})
+    return returnDict  
+    
+def getInputParameters(filename):
     #instantiate the return arrays
     paramsArray = []
     filesDict = {}
     metadataDict = {}
-    #get all the parameter keys
-    matches = re.findall('\\n[A-Z1-9]{2,}', s, re.DOTALL)
+    #get the file contents
+    s = readFile(filename)
+    #get the keys from the file
+    keys = getKeys(s)
     #iterate through the keys and get their values
-    for m in matches:
+    for k in keys:
         #some parameters we do not need to return
-        if m[1:] in ["PUNAME","SPECNAME","PUVSPRNAME","BOUNDNAME","BLOCKDEF"]:
-            key, value = getKeyValue(s, m)
+        if k in ["PUNAME","SPECNAME","PUVSPRNAME","BOUNDNAME","BLOCKDEF"]:
+            key, value = getKeyValue(s, k)
             filesDict.update({ key:  value})
-        elif m[1:] in ['BLM', 'PROP', 'RANDSEED', 'NUMREPS', 'NUMITNS', 'STARTTEMP', 'NUMTEMP', 'COSTTHRESH', 'THRESHPEN1', 'THRESHPEN2', 'SAVERUN', 'SAVEBEST', 'SAVESUMMARY', 'SAVESCEN', 'SAVETARGMET', 'SAVESUMSOLN', 'SAVEPENALTY', 'SAVELOG', 'RUNMODE', 'MISSLEVEL', 'ITIMPTYPE', 'HEURTYPE', 'CLUMPTYPE', 'VERBOSITY', 'SAVESOLUTIONSMATRIX']:
-            key, value = getKeyValue(s, m)
+        elif k in ['BLM', 'PROP', 'RANDSEED', 'NUMREPS', 'NUMITNS', 'STARTTEMP', 'NUMTEMP', 'COSTTHRESH', 'THRESHPEN1', 'THRESHPEN2', 'SAVERUN', 'SAVEBEST', 'SAVESUMMARY', 'SAVESCEN', 'SAVETARGMET', 'SAVESUMSOLN', 'SAVEPENALTY', 'SAVELOG', 'RUNMODE', 'MISSLEVEL', 'ITIMPTYPE', 'HEURTYPE', 'CLUMPTYPE', 'VERBOSITY', 'SAVESOLUTIONSMATRIX']:
+            key, value = getKeyValue(s, k)
             paramsArray.append({'key': key, 'value': value})
-        elif m[1:] in ['DESCRIPTION','CREATEDATE','MAPID']:
-            key, value = getKeyValue(s, m)
+        elif k in ['DESCRIPTION','CREATEDATE','MAPID']:
+            key, value = getKeyValue(s, k)
             metadataDict.update({key: value})
                         
-    return filesDict,paramsArray, metadataDict
+    return filesDict, paramsArray, metadataDict
     
 #updates the parameters in the *.dat file with the new parameters passed as a dict
 def updateParameters(data_file, newParams):
@@ -249,6 +271,68 @@ class listUsers():
         finally:
             return getResponse(params, response)
 
+#resends a users password
+    #https://db-server-blishten.c9users.io/marxan/webAPI2/resendPassword?user=andrew&callback=__jp2
+class resendPassword():
+    def GET(self):
+        try:
+            #initialise the request objects
+            user_folder, scenario_folder, input_folder, output_folder, response, params = initialiseGetRequest(web.ctx.query[1:])
+            
+            #error checking
+            if params["USER"] == "":
+                raise MarxanServicesError("No user specified") 
+                
+            #read the password from the user.dat file
+            password = getInputParameter(user_folder + "user.dat", "PASSWORD")
+            
+            #set the response
+            response.update({'info': password})
+
+        except (MarxanServicesError) as e:
+            response.update({'error': e.message})
+
+        finally:
+            return getResponse(params, response)
+
+#validates a user with the passed credentials
+    #https://db-server-blishten.c9users.io/marxan/webAPI2/validateUser?user=andrew&password=thargal88&callback=__jp2
+class validateUser():
+    def GET(self):
+        try:
+            #initialise the request objects
+            user_folder, scenario_folder, input_folder, output_folder, response, params = initialiseGetRequest(web.ctx.query[1:])
+            
+            #error checking
+            if "USER" not in params.keys():
+                raise MarxanServicesError("No user specified") 
+                
+            #error checking
+            if "PASSWORD" not in params.keys():
+                raise MarxanServicesError("No password specified") 
+                
+            #check the user exists
+            if not os.path.exists(user_folder):
+                raise MarxanServicesError("Invalid login") 
+            
+            else:
+                #read the password from the user.dat file
+                password = getInputParameter(user_folder + "user.dat", "PASSWORD")
+                
+                #compare the two
+                if params["PASSWORD"] == password:
+                    #set the response
+                    response.update({'info': "User " + params["USER"] + " validated"})
+                #invalid login
+                else:
+                     raise MarxanServicesError("Invalid login")    
+
+        except (MarxanServicesError) as e:
+            response.update({'error': e.message})
+
+        finally:
+            return getResponse(params, response)
+
 #create a new user for marxan server
 class createUser():
     def POST(self):
@@ -303,7 +387,7 @@ class createUser():
             return getResponse({}, response)
     
 #gets a users information from the user folder
-    #https://db-server-blishten.c9users.io/marxan/webAPI2/getUser?user=asd&callback=__jp2
+    #https://db-server-blishten.c9users.io/marxan/webAPI2/getUser?user=andrew&callback=__jp2
 class getUser():
     def GET(self):
         try:
@@ -311,14 +395,17 @@ class getUser():
             user_folder, scenario_folder, input_folder, output_folder, response, params = initialiseGetRequest(web.ctx.query[1:])
             
             #error checking
-            if params["USER"] == "":
+            if "USER" not in params.keys():
                 raise MarxanServicesError("No user specified")     
+                
+            if not os.path.exists(user_folder):
+                raise MarxanServicesError("User does not exist")     
             
-            #get the lastscenario from the user.dat file
-            lastScenario = getInputParameter(user_folder + "user.dat", "LASTSCENARIO")
+            #get the users data
+            userData = getUserData(user_folder + "user.dat")
             
             #set the response
-            response.update({'info': "User data received", "lastScenario" : lastScenario})
+            response.update({'info': "User data received", "userData" : userData})
 
         except (MarxanServicesError) as e:
             response.update({'error': e.message})
