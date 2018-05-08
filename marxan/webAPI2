@@ -10,6 +10,7 @@ MARXAN_EXECUTABLE = MARXAN_FOLDER + "MarOpt_v243_Linux64"
 MARXAN_OUTPUT_FOLDER = MARXAN_FOLDER + "output" + os.sep 
 MARXAN_INPUT_PARAMETER_FILENAME = MARXAN_FOLDER + "input.dat"
 MARXAN_INPUT_FOLDER = MARXAN_FOLDER + "input" + os.sep
+SAMPLE_TILESET_ID = "blishten.3ogmvag8" #this is the sample data that comes with marxan and consists of a grid of 100 planning units
 
 urls = (
   "/listUsers", "listUsers",
@@ -17,11 +18,13 @@ urls = (
   "/validateUser","validateUser",
   "/resendPassword","resendPassword",
   "/getUser","getUser",
+  "/updateUser","updateUser",
   "/listScenarios", "listScenarios",
   "/getScenario","getScenario",
   "/createScenario", "createScenario",
   "/deleteScenario", "deleteScenario",
   "/renameScenario", "renameScenario",
+  "/updateRunParams","updateRunParams",
   "/runMarxan", "runMarxan", 
   "/loadSolution", "loadSolution", 
   "/postFile","postFile",
@@ -92,7 +95,12 @@ def getUserData(filename):
     for k in keys:
         key, value = getKeyValue(s, k)
         #update the return dict
-        returnDict.update({ key:  value})
+        if value == "true":
+            value = True
+        if value == "false":
+            value = False
+        if key not in ["PASSWORD"]:
+            returnDict.update({ key:  value})
     return returnDict  
     
 def getInputParameters(filename):
@@ -339,13 +347,12 @@ class createUser():
         try:
             #there will be  variables in the data: 
             # user          = the user to create
-            # scenario      = the name of the scenario to create - for a new user this will always be 'Sample scenario'
             
             #get the data from the POST request
             data = web.input()
 
             #error checking
-            for key in ["password", "name", "email", "mapboxpk"]:
+            for key in ["password", "name", "email", "mapboxaccesstoken"]:
                 if key not in data.keys():
                     raise MarxanServicesError("No " + key + " parameter")
 
@@ -365,7 +372,7 @@ class createUser():
             #create the folders for the scenario and copy the input.dat file
             createEmptyScenario(input_folder, output_folder,scenario_folder,"Sample scenario using the Marxan sample data")
             #update the input.dat file with information on the input files
-            updateParameters(scenario_folder + "input.dat", {'PUNAME': 'pu.dat','SPECNAME': 'spec.dat','PUVSPRNAME': 'puvspr.dat','BOUNDNAME': 'bound.dat','MAPID':'blishten.3ogmvag8'})
+            updateParameters(scenario_folder + "input.dat", {'PUNAME': 'pu.dat','SPECNAME': 'spec.dat','PUVSPRNAME': 'puvspr.dat','BOUNDNAME': 'bound.dat','MAPID': SAMPLE_TILESET_ID})
 
             #copy the sample scenario files into the input folder
             copyfile(MARXAN_INPUT_FOLDER + 'bound_orig.dat', input_folder + 'bound.dat')
@@ -375,7 +382,7 @@ class createUser():
             copyfile(MARXAN_FOLDER + 'user.dat', user_folder + 'user.dat')
 
             #update the user.dat file with information from the POST request
-            updateParameters(user_folder + "user.dat", {'NAME': data.name,'EMAIL': data.email,'PASSWORD': data.password,'MAPBOXPK': data.mapboxpk})
+            updateParameters(user_folder + "user.dat", {'NAME': data.name,'EMAIL': data.email,'PASSWORD': data.password,'MAPBOXACCESSTOKEN': data.mapboxaccesstoken})
             
             #write the response
             response = {'info': "User '" + user + "' created"}
@@ -412,7 +419,35 @@ class getUser():
 
         finally:
             return getResponse(params, response)
-    
+
+#updates the user data in the user.dat file with the passed parameters
+class updateUser:
+    def POST(self):
+        try:
+            #there will be 5 variables in the data: 
+            # user          = the currently logged on user
+            data = web.input()
+
+            #error check 
+            if "user" not in data.keys():
+                raise MarxanServicesError("No user parameter") 
+                
+            #get the appropriate folders
+            data.update({"scenario":"Sample scenario"}) # required parameter in the method
+            user_folder, scenario_folder, input_folder, output_folder = initialisePostRequest(data)
+            
+            #set the parameters in the user.dat file
+            updateParameters(user_folder + "user.dat", data)
+            
+            # #write the response
+            response = {'info': "User information updated"}
+            
+        except (MarxanServicesError) as e:
+            response = {'error':  e.message}
+
+        finally:
+            return getResponse({}, response)
+
 #list scenarios for the specific user
     #https://db-server-blishten.c9users.io/marxan/webAPI2/listScenarios?user=andrew&callback=__jp2
 class listScenarios():
@@ -532,6 +567,34 @@ class renameScenario():
 
         finally:
             return getResponse(params, response)
+
+#updates the run parameters for the passed user/scenario 
+class updateRunParams:
+    def POST(self):
+        try:
+            data = web.input()
+            #error check 
+            if "user" not in data.keys():
+                raise MarxanServicesError("No user parameter") 
+                
+            #error check 
+            if "scenario" not in data.keys():
+                raise MarxanServicesError("No scenario parameter") 
+                
+            #get the appropriate folders
+            user_folder, scenario_folder, input_folder, output_folder = initialisePostRequest(data)
+            
+            #set the parameters in the user.dat file
+            updateParameters(scenario_folder + "input.dat", data)
+            
+            # #write the response
+            response = {'info': "Run parameters updated"}
+            
+        except (MarxanServicesError) as e:
+            response = {'error':  e.message}
+
+        finally:
+            return getResponse({}, response)
 
 #runs marxan and returns the sum of solutions, summary info on all runs and the log
     #https://db-server-blishten.c9users.io/marxan/webAPI/runMarxan?user=andrew&scenario=Sample%20scenario&numReps=10&returnall=true&verbosity=3&callback=__jp2
