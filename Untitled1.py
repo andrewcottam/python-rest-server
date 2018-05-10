@@ -1,4 +1,8 @@
-import pandas, json, re
+import pandas, json, re,os 
+from shutil import copyfile
+MARXAN_FOLDER = "/home/ubuntu/workspace/marxan/Marxan243/MarxanData_unix/"
+MARXAN_INPUT_FOLDER = MARXAN_FOLDER + "input" + os.sep
+
 #gets the position of the end of the line which may be different in windows/unix generated files
 def writeFile(filename, data):
     f = open(filename, 'wb')
@@ -44,6 +48,7 @@ def getUserData(filename):
         returnDict.update({ key:  value})
                         
     return returnDict  
+    
 def getInputParameters(filename):
     #instantiate the return arrays
     paramsArray = []
@@ -87,4 +92,11 @@ def updateParameters(data_file, newParams):
     return 
 
 # print getInputParameters("/home/ubuntu/workspace/marxan/Marxan243/MarxanData_unix/andrew/Sample scenario/input.dat")
-updateParameters("/home/ubuntu/workspace/marxan/Marxan243/MarxanData_unix/andrew/user.dat", {"NAME":"Wibble", "scenario":"Sample scenario"})
+# updateParameters("/home/ubuntu/workspace/marxan/Marxan243/MarxanData_unix/andrew/user.dat", {"NAME":"Wibble", "scenario":"Sample scenario"})
+# getUserData("/home/ubuntu/workspace/marxan/Marxan243/MarxanData_unix/andrew/user.dat")
+
+input_folder = "/home/ubuntu/workspace/marxan/Marxan243/MarxanData_unix/andrew/Sample scenario/input/"
+copyfile(MARXAN_INPUT_FOLDER + 'bound_png.dat', input_folder + 'bound_png.dat')
+copyfile(MARXAN_INPUT_FOLDER + 'pu_png.dat', input_folder + 'pu_png.dat')
+copyfile(MARXAN_INPUT_FOLDER + 'puvspr_png.dat', input_folder + 'puvspr_png.dat')
+copyfile(MARXAN_INPUT_FOLDER + 'spec_png.dat', input_folder + 'spec_png.dat')

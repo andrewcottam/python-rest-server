@@ -10,7 +10,8 @@ MARXAN_EXECUTABLE = MARXAN_FOLDER + "MarOpt_v243_Linux64"
 MARXAN_OUTPUT_FOLDER = MARXAN_FOLDER + "output" + os.sep 
 MARXAN_INPUT_PARAMETER_FILENAME = MARXAN_FOLDER + "input.dat"
 MARXAN_INPUT_FOLDER = MARXAN_FOLDER + "input" + os.sep
-SAMPLE_TILESET_ID = "blishten.3ogmvag8" #this is the sample data that comes with marxan and consists of a grid of 100 planning units
+# SAMPLE_TILESET_ID = "blishten.3ogmvag8" #this is the sample data that comes with marxan and consists of a grid of 100 planning units
+SAMPLE_TILESET_ID = "blishten.pulayer_costt" #png example
 
 urls = (
   "/listUsers", "listUsers",
@@ -372,15 +373,21 @@ class createUser():
                 raise MarxanServicesError("User '" + user + "' already exists")
                 
             #create the folders for the scenario and copy the input.dat file
-            createEmptyScenario(input_folder, output_folder,scenario_folder,"Sample scenario using the Marxan sample data")
+            # createEmptyScenario(input_folder, output_folder,scenario_folder,"Sample scenario using the Marxan sample data")
+            createEmptyScenario(input_folder, output_folder,scenario_folder,"Sample PNG scenario using data from The Nature Conservancy")
             #update the input.dat file with information on the input files
-            updateParameters(scenario_folder + "input.dat", {'PUNAME': 'pu.dat','SPECNAME': 'spec.dat','PUVSPRNAME': 'puvspr.dat','BOUNDNAME': 'bound.dat','MAPID': SAMPLE_TILESET_ID})
+            # updateParameters(scenario_folder + "input.dat", {'PUNAME': 'pu.dat','SPECNAME': 'spec.dat','PUVSPRNAME': 'puvspr.dat','BOUNDNAME': 'bound.dat','MAPID': SAMPLE_TILESET_ID})
+            updateParameters(scenario_folder + "input.dat", {'PUNAME': 'pu_png.dat','SPECNAME': 'spec_png.dat','PUVSPRNAME': 'puvspr_png.dat','BOUNDNAME': 'bound_png.dat','MAPID': SAMPLE_TILESET_ID})
 
             #copy the sample scenario files into the input folder
-            copyfile(MARXAN_INPUT_FOLDER + 'bound_orig.dat', input_folder + 'bound.dat')
-            copyfile(MARXAN_INPUT_FOLDER + 'pu_orig.dat', input_folder + 'pu.dat')
-            copyfile(MARXAN_INPUT_FOLDER + 'puvspr_orig.dat', input_folder + 'puvspr.dat')
-            copyfile(MARXAN_INPUT_FOLDER + 'spec_orig.dat', input_folder + 'spec.dat')
+            # copyfile(MARXAN_INPUT_FOLDER + 'bound_orig.dat', input_folder + 'bound.dat')
+            # copyfile(MARXAN_INPUT_FOLDER + 'pu_orig.dat', input_folder + 'pu.dat')
+            # copyfile(MARXAN_INPUT_FOLDER + 'puvspr_orig.dat', input_folder + 'puvspr.dat')
+            # copyfile(MARXAN_INPUT_FOLDER + 'spec_orig.dat', input_folder + 'spec.dat')
+            copyfile(MARXAN_INPUT_FOLDER + 'bound_png.dat', input_folder + 'bound_png.dat')
+            copyfile(MARXAN_INPUT_FOLDER + 'pu_png.dat', input_folder + 'pu_png.dat')
+            copyfile(MARXAN_INPUT_FOLDER + 'puvspr_png.dat', input_folder + 'puvspr_png.dat')
+            copyfile(MARXAN_INPUT_FOLDER + 'spec_png.dat', input_folder + 'spec_png.dat')
             copyfile(MARXAN_FOLDER + 'user.dat', user_folder + 'user.dat')
 
             #update the user.dat file with information from the POST request
