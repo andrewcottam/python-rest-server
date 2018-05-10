@@ -171,7 +171,7 @@ def initialiseGetRequest(queryString):
     params = getQueryStringParams(queryString)
     #get the user, input and output folders
     params.setdefault('USER','') # set to an empty string if it is not passed, e.g. in getUsers, createUsers etc.
-    params.setdefault('SCENARIO','Sample scenario') # set to an empty string if it is not passed, e.g. in getUsers, createUsers etc.
+    params.setdefault('SCENARIO','Sample scenario') # set to a sample string if it is not passed, e.g. in getUsers, createUsers etc.
     user_folder, scenario_folder, input_folder, output_folder = getFolders(params['USER'], params['SCENARIO'])
     return user_folder, scenario_folder, input_folder, output_folder, response, params
 
@@ -182,12 +182,14 @@ def initialisePostRequest(data):
         if not ("user" in data.keys()):
             raise MarxanServicesError("No user parameter found")
 
-        #check the scenario parameter
+        #check the scenario parameter - if none is passed then set a default = some updates dont pass a scenario, e.g. updateUser, createUser etc
         if not ("scenario" in data.keys()):
-            raise MarxanServicesError("No scenario parameter found")
+            scenario = "Sample scenario"
+        else:
+            scenario = data.scenario
 
         #get the user, scenario, input and output folders
-        user_folder, scenario_folder, input_folder, output_folder = getFolders(data.user, data.scenario)
+        user_folder, scenario_folder, input_folder, output_folder = getFolders(data.user, scenario)
         
     except (MarxanServicesError) as e:
         raise
@@ -433,14 +435,13 @@ class updateUser:
                 raise MarxanServicesError("No user parameter") 
                 
             #get the appropriate folders
-            data.update({"scenario":"Sample scenario"}) # required parameter in the method
             user_folder, scenario_folder, input_folder, output_folder = initialisePostRequest(data)
             
             #set the parameters in the user.dat file
             updateParameters(user_folder + "user.dat", data)
             
             # #write the response
-            response = {'info': "User information updated"}
+            response = {'info': "User information saved"}
             
         except (MarxanServicesError) as e:
             response = {'error':  e.message}
@@ -588,7 +589,7 @@ class updateRunParams:
             updateParameters(scenario_folder + "input.dat", data)
             
             # #write the response
-            response = {'info': "Run parameters updated"}
+            response = {'info': "Run parameters saved"}
             
         except (MarxanServicesError) as e:
             response = {'error':  e.message}
@@ -597,7 +598,7 @@ class updateRunParams:
             return getResponse({}, response)
 
 #runs marxan and returns the sum of solutions, summary info on all runs and the log
-    #https://db-server-blishten.c9users.io/marxan/webAPI/runMarxan?user=andrew&scenario=Sample%20scenario&numReps=10&returnall=true&verbosity=3&callback=__jp2
+    #https://db-server-blishten.c9users.io/marxan/webAPI/runMarxan?user=andrew&scenario=Sample%20scenario&returnall=true&verbosity=3&callback=__jp2
 class runMarxan:
     def GET(self):
         try:
@@ -633,7 +634,7 @@ class runMarxan:
                         response.update({os.path.basename(f).split(".")[0] : json.loads(pandas.read_csv(f).to_json(orient='values'))})
             
             #add the other items to the response
-            response.update({'log': log, 'sum':json.loads(sum),'ssoln': ssoln})
+            response.update({'info':'Run succeeded', 'log': log, 'sum':json.loads(sum),'ssoln': ssoln})
             
         except (MarxanServicesError) as e:
             response.update({'error': e.message, 'log': log})

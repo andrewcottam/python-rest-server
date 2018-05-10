@@ -1,4 +1,17 @@
 import pandas, json, re
+#gets the position of the end of the line which may be different in windows/unix generated files
+def writeFile(filename, data):
+    f = open(filename, 'wb')
+    f.write(data)
+    f.close()
+    
+def getEndOfLine(text):
+    try:
+        p = text.index("\r\n") 
+    except (ValueError):
+        p = text.index("\n") 
+    return p
+
 def readFile(filename):
     f = open(filename)
     s = f.read()
@@ -54,5 +67,24 @@ def getInputParameters(filename):
             metadataDict.update({key: value})
                         
     return filesDict, paramsArray, metadataDict
-    
-print getInputParameters("/home/ubuntu/workspace/marxan/Marxan243/MarxanData_unix/andrew/Sample scenario/input.dat")
+
+#updates the parameters in the *.dat file with the new parameters passed as a dict
+def updateParameters(data_file, newParams):
+    if newParams:
+        #get the existing parameters 
+        s = readFile(data_file)
+        #update any that are passed in as query params
+        for k, v in newParams.iteritems():
+            try:
+                p1 = s.index(k) #get the first position of the parameter
+                if p1>-1:
+                    p2 = getEndOfLine(s[p1:]) #get the position of the end of line
+                    s = s[:p1] + k + " " + v + s[(p1 + p2):]
+                #write these parameters back to the *.dat file
+                writeFile(data_file, s)
+            except ValueError:
+                continue
+    return 
+
+# print getInputParameters("/home/ubuntu/workspace/marxan/Marxan243/MarxanData_unix/andrew/Sample scenario/input.dat")
+updateParameters("/home/ubuntu/workspace/marxan/Marxan243/MarxanData_unix/andrew/user.dat", {"NAME":"Wibble", "scenario":"Sample scenario"})
