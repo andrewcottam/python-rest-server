@@ -10,8 +10,8 @@ MARXAN_EXECUTABLE = MARXAN_FOLDER + "MarOpt_v243_Linux64"
 MARXAN_OUTPUT_FOLDER = MARXAN_FOLDER + "output" + os.sep 
 MARXAN_INPUT_PARAMETER_FILENAME = MARXAN_FOLDER + "input.dat"
 MARXAN_INPUT_FOLDER = MARXAN_FOLDER + "input" + os.sep
-# SAMPLE_TILESET_ID = "blishten.3ogmvag8" #this is the sample data that comes with marxan and consists of a grid of 100 planning units
-SAMPLE_TILESET_ID = "blishten.pulayer_costt" #png example
+SAMPLE_TILESET_ID = "blishten.3ogmvag8" #this is the sample data that comes with marxan and consists of a grid of 100 planning units
+SAMPLE_TILESET_ID_PNG = "blishten.pulayer_costt" #png example
 
 urls = (
   "/listUsers", "listUsers",
@@ -109,6 +109,7 @@ def getInputParameters(filename):
     paramsArray = []
     filesDict = {}
     metadataDict = {}
+    rendererDict = {}
     #get the file contents
     s = readFile(filename)
     #get the keys from the file
@@ -125,8 +126,11 @@ def getInputParameters(filename):
         elif k in ['DESCRIPTION','CREATEDATE','MAPID']:
             key, value = getKeyValue(s, k)
             metadataDict.update({key: value})
+        elif k in ['RENDERER']:
+            key, value = getKeyValue(s, k)
+            rendererDict.update({key: value})
                         
-    return filesDict, paramsArray, metadataDict
+    return filesDict, paramsArray, metadataDict, rendererDict
     
 #updates the parameters in the *.dat file with the new parameters passed as a dict
 def updateParameters(data_file, newParams):
@@ -372,23 +376,36 @@ class createUser():
             if user in users:
                 raise MarxanServicesError("User '" + user + "' already exists")
                 
-            #create the folders for the scenario and copy the input.dat file
-            # createEmptyScenario(input_folder, output_folder,scenario_folder,"Sample scenario using the Marxan sample data")
+            #create the folders for the PNG scenario and copy the input.dat file
             createEmptyScenario(input_folder, output_folder,scenario_folder,"Sample PNG scenario using data from The Nature Conservancy")
-            #update the input.dat file with information on the input files
-            # updateParameters(scenario_folder + "input.dat", {'PUNAME': 'pu.dat','SPECNAME': 'spec.dat','PUVSPRNAME': 'puvspr.dat','BOUNDNAME': 'bound.dat','MAPID': SAMPLE_TILESET_ID})
-            updateParameters(scenario_folder + "input.dat", {'PUNAME': 'pu_png.dat','SPECNAME': 'spec_png.dat','PUVSPRNAME': 'puvspr_png.dat','BOUNDNAME': 'bound_png.dat','MAPID': SAMPLE_TILESET_ID})
+
+            #copy the default user data
+            copyfile(MARXAN_FOLDER + 'user.dat', user_folder + 'user.dat')
 
             #copy the sample scenario files into the input folder
-            # copyfile(MARXAN_INPUT_FOLDER + 'bound_orig.dat', input_folder + 'bound.dat')
-            # copyfile(MARXAN_INPUT_FOLDER + 'pu_orig.dat', input_folder + 'pu.dat')
-            # copyfile(MARXAN_INPUT_FOLDER + 'puvspr_orig.dat', input_folder + 'puvspr.dat')
-            # copyfile(MARXAN_INPUT_FOLDER + 'spec_orig.dat', input_folder + 'spec.dat')
             copyfile(MARXAN_INPUT_FOLDER + 'bound_png.dat', input_folder + 'bound_png.dat')
             copyfile(MARXAN_INPUT_FOLDER + 'pu_png.dat', input_folder + 'pu_png.dat')
             copyfile(MARXAN_INPUT_FOLDER + 'puvspr_png.dat', input_folder + 'puvspr_png.dat')
             copyfile(MARXAN_INPUT_FOLDER + 'spec_png.dat', input_folder + 'spec_png.dat')
-            copyfile(MARXAN_FOLDER + 'user.dat', user_folder + 'user.dat')
+
+            #update the input.dat file with information on the input files
+            updateParameters(scenario_folder + "input.dat", {'PUNAME': 'pu_png.dat','SPECNAME': 'spec_png.dat','PUVSPRNAME': 'puvspr_png.dat','BOUNDNAME': 'bound_png.dat','MAPID': SAMPLE_TILESET_ID_PNG})
+
+            #create another scenario for the marxan default data 
+            data["scenario"] = "Marxan default scenario"
+            user_folder, scenario_folder, input_folder, output_folder = initialisePostRequest(data)
+
+            #create the folders for the PNG scenario and copy the input.dat file
+            createEmptyScenario(input_folder, output_folder,scenario_folder,"Sample scenario using the Marxan sample data")
+            
+            #copy the sample scenario files into the input folder
+            copyfile(MARXAN_INPUT_FOLDER + 'bound_orig.dat', input_folder + 'bound.dat')
+            copyfile(MARXAN_INPUT_FOLDER + 'pu_orig.dat', input_folder + 'pu.dat')
+            copyfile(MARXAN_INPUT_FOLDER + 'puvspr_orig.dat', input_folder + 'puvspr.dat')
+            copyfile(MARXAN_INPUT_FOLDER + 'spec_orig.dat', input_folder + 'spec.dat')
+            
+            #update the input.dat file with information on the input files
+            updateParameters(scenario_folder + "input.dat", {'PUNAME': 'pu.dat','SPECNAME': 'spec.dat','PUVSPRNAME': 'puvspr.dat','BOUNDNAME': 'bound.dat','MAPID': SAMPLE_TILESET_ID})
 
             #update the user.dat file with information from the POST request
             updateParameters(user_folder + "user.dat", {'NAME': data.name,'EMAIL': data.email,'PASSWORD': data.password,'MAPBOXACCESSTOKEN': data.mapboxaccesstoken})
@@ -482,9 +499,9 @@ class getScenario():
             checkScenarioExists(scenario_folder)                
 
             #open the input.dat file to get all of the scenario files, parameters and metadata
-            files,runParams, metadata = getInputParameters(scenario_folder + "input.dat")
+            files, runParams, metadata, renderer = getInputParameters(scenario_folder + "input.dat")
             #set the response
-            response.update({'scenario':params['SCENARIO'],'metadata':metadata, 'files':files, 'runParameters':runParams})
+            response.update({'scenario':params['SCENARIO'],'metadata':metadata, 'files':files, 'runParameters':runParams, 'renderer': renderer})
             
             #set the users last scenario so it will load on login
             updateParameters(user_folder + "user.dat", {'LASTSCENARIO': params['SCENARIO']})
