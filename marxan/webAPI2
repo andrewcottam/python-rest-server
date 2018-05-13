@@ -126,7 +126,7 @@ def getInputParameters(filename):
         elif k in ['DESCRIPTION','CREATEDATE','MAPID']:
             key, value = getKeyValue(s, k)
             metadataDict.update({key: value})
-        elif k in ['RENDERER', 'NUMCLASSES','COLORCODE']:
+        elif k in ['CLASSIFICATION', 'NUMCLASSES','COLORCODE', 'TOPCLASSES','OPACITY']:
             key, value = getKeyValue(s, k)
             rendererDict.update({key: value})
                         
