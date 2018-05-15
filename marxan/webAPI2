@@ -624,7 +624,7 @@ class updateRunParams:
             return getResponse({}, response)
 
 #runs marxan 
-    #https://db-server-blishten.c9users.io/marxan/webAPI/runMarxan?user=andrew&scenario=Sample%20scenario&returnall=true&callback=__jp2
+    #https://db-server-blishten.c9users.io/marxan/webAPI/runMarxan?user=asd2&scenario=Marxan%20default%20scenario&callback=__jp2
 class runMarxan:
     def GET(self):
         try:
@@ -636,16 +636,11 @@ class runMarxan:
             os.chdir(scenario_folder) 
             #delete all of the current output files
             deleteAllFiles(output_folder)
-            #run marxan asynchronously
-            p = subprocess.Popen([MARXAN_EXECUTABLE], stdout=subprocess.PIPE) 
-            #write a reponse            
-            response.update({"info": "Marxan started successfully"})
-
-        except (MarxanServicesError) as e:
-            response.update({'error': e.message, 'log': log})
+            #run marxan 
+            subprocess.Popen(MARXAN_EXECUTABLE) 
 
         except:
-            "Unexpected error:", sys.exc_info()[0]
+            response.update({'error': sys.exc_info()[0]})
             
         finally:
             return getResponse(params, response)
