@@ -1,4 +1,4 @@
-import pandas, json, re,os 
+import pandas, json, re,os ,glob
 from shutil import copyfile
 MARXAN_FOLDER = "/home/ubuntu/workspace/marxan/Marxan243/MarxanData_unix/"
 MARXAN_INPUT_FOLDER = MARXAN_FOLDER + "input" + os.sep
@@ -96,7 +96,10 @@ def updateParameters(data_file, newParams):
 # getUserData("/home/ubuntu/workspace/marxan/Marxan243/MarxanData_unix/andrew/user.dat")
 
 input_folder = "/home/ubuntu/workspace/marxan/Marxan243/MarxanData_unix/andrew/Sample scenario/input/"
-copyfile(MARXAN_INPUT_FOLDER + 'bound_png.dat', input_folder + 'bound_png.dat')
-copyfile(MARXAN_INPUT_FOLDER + 'pu_png.dat', input_folder + 'pu_png.dat')
-copyfile(MARXAN_INPUT_FOLDER + 'puvspr_png.dat', input_folder + 'puvspr_png.dat')
-copyfile(MARXAN_INPUT_FOLDER + 'spec_png.dat', input_folder + 'spec_png.dat')
+output_folder = "/home/ubuntu/workspace/marxan/Marxan243/MarxanData_unix/asd2/Marxan default scenario/output/"
+# copyfile(MARXAN_INPUT_FOLDER + 'bound_png.dat', input_folder + 'bound_png.dat')
+# copyfile(MARXAN_INPUT_FOLDER + 'pu_png.dat', input_folder + 'pu_png.dat')
+# copyfile(MARXAN_INPUT_FOLDER + 'puvspr_png.dat', input_folder + 'puvspr_png.dat')
+# copyfile(MARXAN_INPUT_FOLDER + 'spec_png.dat', input_folder + 'spec_png.dat')
+
+print glob.glob(output_folder + "output_r*")

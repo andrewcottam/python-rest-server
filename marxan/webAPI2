@@ -1,6 +1,7 @@
 #!/home/ubuntu/anaconda2/bin/python
 #the above line forces the CGI script to use the Anaconda Python interpreter
-import sys, os, web, subprocess, urllib, pandas, json, glob, shutil, re, datetime
+import sys, os, web, subprocess, urllib, pandas, json, glob, shutil, re, datetime, logging
+import inotify.adapters
 import geopandas as gpd
 from collections import OrderedDict
 from shutil import copyfile
@@ -27,6 +28,7 @@ urls = (
   "/renameScenario", "renameScenario",
   "/updateRunParams","updateRunParams",
   "/runMarxan", "runMarxan", 
+  "/pollResults","pollResults",
   "/loadSolution", "loadSolution", 
   "/postFile","postFile",
   "/updateParameter","updateParameter"
@@ -621,8 +623,8 @@ class updateRunParams:
         finally:
             return getResponse({}, response)
 
-#runs marxan and returns the sum of solutions, summary info on all runs and the log
-    #https://db-server-blishten.c9users.io/marxan/webAPI/runMarxan?user=andrew&scenario=Sample%20scenario&returnall=true&verbosity=3&callback=__jp2
+#runs marxan 
+    #https://db-server-blishten.c9users.io/marxan/webAPI/runMarxan?user=andrew&scenario=Sample%20scenario&returnall=true&callback=__jp2
 class runMarxan:
     def GET(self):
         try:
@@ -634,37 +636,69 @@ class runMarxan:
             os.chdir(scenario_folder) 
             #delete all of the current output files
             deleteAllFiles(output_folder)
-            #run marxan using the passed parameters 
+            #run marxan asynchronously
             p = subprocess.Popen([MARXAN_EXECUTABLE], stdout=subprocess.PIPE) 
-            #get the results of the marxan run
-            log, err = p.communicate()
+            #write a reponse            
+            response.update({"info": "Marxan started successfully"})
+
+        except (MarxanServicesError) as e:
+            response.update({'error': e.message, 'log': log})
+
+        except:
+            "Unexpected error:", sys.exc_info()[0]
             
-            #get the summary information for all solutions
-            if not (os.path.exists(output_folder + "output_sum.txt")):
-                #no output files so something must have gone wrong
-                raise MarxanServicesError("No output files were generated - check the Marxan log")
-            #read the data from the text file
-            sum = pandas.read_csv(output_folder + "output_sum.txt").to_json(orient='values') 
+        finally:
+            return getResponse(params, response)
+
+#polls the server for the results of a marxan run and if complete returns the sum of solutions, summary info on all runs and the log
+    #https://db-server-blishten.c9users.io/marxan/webAPI2/pollResults?user=asd2&scenario=Marxan%20default%20scenario&numreps=10&returnall=false&callback=__jp2
+class pollResults:
+    def GET(self):
+        try:
+            #initialise the request objects
+            user_folder, scenario_folder, input_folder, output_folder, response, params = initialiseGetRequest(web.ctx.query[1:])
+            if "NUMREPS" not in params.keys():
+                raise MarxanServicesError("No numreps parameter")
+
+            #see how many runs have been completed
+            runsCompleted = len(glob.glob(output_folder + "output_r*"))
             
-            #get the summed solution as a json string
-            ssoln = getVectorTileOptimisedOutput(output_folder + "output_ssoln.txt", "number")
-            
-            # for solution in solutions if wanted
-            if "RETURNALL" in params.keys():
-                #iterate through each of the solutions and get the data
-                solutionFiles = glob.glob(output_folder + "/output_r*")
-                if (params["RETURNALL"]=='true'):
-                    for f in solutionFiles:
-                        response.update({os.path.basename(f).split(".")[0] : json.loads(pandas.read_csv(f).to_json(orient='values'))})
-            
-            #add the other items to the response
-            response.update({'info':'Run succeeded', 'log': log, 'sum':json.loads(sum),'ssoln': ssoln})
+            #if complete then return the data
+            if runsCompleted == int(params['NUMREPS']):
+                
+                #read the log from the log file
+                log = readFile(output_folder + "output_log.dat")
+                
+                #read the data from the text file
+                sum = pandas.read_csv(output_folder + "output_sum.txt").to_json(orient='values') 
+                
+                #get the summed solution as a json string
+                ssoln = getVectorTileOptimisedOutput(output_folder + "output_ssoln.txt", "number")
+                
+                # for solution in solutions if wanted
+                if "RETURNALL" in params.keys():
+                
+                    #iterate through each of the solutions and get the data
+                    solutionFiles = glob.glob(output_folder + "/output_r*")
+                    if (params["RETURNALL"]=='true'):
+                        for f in solutionFiles:
+                            response.update({os.path.basename(f).split(".")[0] : json.loads(pandas.read_csv(f).to_json(orient='values'))})
+                
+                #add the other items to the response
+                response.update({'info':'Run succeeded', 'log': log, 'sum':json.loads(sum),'ssoln': ssoln})
+        
+            else:
+                #return the number of runs completed
+                response.update({'info': str(runsCompleted) + " runs completed"})
             
         except (MarxanServicesError) as e:
             response.update({'error': e.message, 'log': log})
 
+        except:
+            "Unexpected error:", sys.exc_info()[0]
+            
         finally:
-            return getResponse(params, response)
+            return getResponse(params, response)        
 
 #for loading each individual solutions data
     #https://db-server-blishten.c9users.io/marxan/webAPI2/loadSolution?user=andrew&scenario=Sample%20scenaio&solution=1&callback=__jp2
@@ -747,6 +781,7 @@ class updateParameter:
             return getResponse(params, response)
 
 app = web.application(urls, locals()) 
+web.wsgi.runwsgi = lambda func, addr=None: web.wsgi.runfcgi(func, addr)
 
 if __name__ == "__main__":
     app.run()
