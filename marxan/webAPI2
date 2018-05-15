@@ -684,7 +684,7 @@ class pollResults:
         
             else:
                 #return the number of runs completed
-                response.update({'info': str(runsCompleted) + " runs completed"})
+                response.update({'info': str(runsCompleted) + " runs completed", 'runsCompleted': runsCompleted})
             
         except (MarxanServicesError) as e:
             response.update({'error': e.message, 'log': log})
