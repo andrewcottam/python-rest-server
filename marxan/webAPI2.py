@@ -26,6 +26,7 @@ urls = (
   "/createScenario", "createScenario",
   "/deleteScenario", "deleteScenario",
   "/renameScenario", "renameScenario",
+  "/renameDescription", "renameDescription",
   "/updateRunParams","updateRunParams",
   "/runMarxan", "runMarxan", 
   "/pollResults","pollResults",
@@ -273,7 +274,7 @@ def getVectorTileOptimisedOutput(csvFile, columnName):
     return json.loads(json.dumps(arr))
 
 #list users for the marxan server
-    #https://db-server-blishten.c9users.io/marxan/webAPI2/listUsers?callback=__jp2
+    #https://db-server-blishten.c9users.io/marxan/webAPI2.py/listUsers?callback=__jp2
 class listUsers():
     def GET(self):
         try:
@@ -289,7 +290,7 @@ class listUsers():
             return getResponse(params, response)
 
 #resends a users password
-    #https://db-server-blishten.c9users.io/marxan/webAPI2/resendPassword?user=andrew&callback=__jp2
+    #https://db-server-blishten.c9users.io/marxan/webAPI2.py/resendPassword?user=andrew&callback=__jp2
 class resendPassword():
     def GET(self):
         try:
@@ -313,7 +314,7 @@ class resendPassword():
             return getResponse(params, response)
 
 #validates a user with the passed credentials
-    #https://db-server-blishten.c9users.io/marxan/webAPI2/validateUser?user=andrew&password=thargal88&callback=__jp2
+    #https://db-server-blishten.c9users.io/marxan/webAPI2.py/validateUser?user=andrew&password=thargal88&callback=__jp2
 class validateUser():
     def GET(self):
         try:
@@ -422,7 +423,7 @@ class createUser():
             return getResponse({}, response)
     
 #gets a users information from the user folder
-    #https://db-server-blishten.c9users.io/marxan/webAPI2/getUser?user=andrew&callback=__jp2
+    #https://db-server-blishten.c9users.io/marxan/webAPI2.py/getUser?user=andrew&callback=__jp2
 class getUser():
     def GET(self):
         try:
@@ -476,7 +477,7 @@ class updateUser:
             return getResponse({}, response)
 
 #list scenarios for the specific user
-    #https://db-server-blishten.c9users.io/marxan/webAPI2/listScenarios?user=andrew&callback=__jp2
+    #https://db-server-blishten.c9users.io/marxan/webAPI2.py/listScenarios?user=andrew&callback=__jp2
 class listScenarios():
     def GET(self):
         try:
@@ -492,7 +493,7 @@ class listScenarios():
             return getResponse(params, response)
           
 #loads all of the data for the scenario and returns the files and the run parameters as separate arrays
-    #https://db-server-blishten.c9users.io/marxan/webAPI2/getScenario?user=andrew&scenario=Sample%20scenario&callback=__jp2
+    #https://db-server-blishten.c9users.io/marxan/webAPI2.py/getScenario?user=andrew&scenario=Sample%20scenario&callback=__jp2
 class getScenario():
     def GET(self):
         try:
@@ -515,7 +516,7 @@ class getScenario():
             return getResponse(params, response)
 
 #creates a new scenario in the users folder
-    #https://db-server-blishten.c9users.io/marxan/webAPI2/createScenario?user=andrew&scenario=test2&description=Groovy%20description&callback=__jp2
+    #https://db-server-blishten.c9users.io/marxan/webAPI2.py/createScenario?user=andrew&scenario=test2&description=Groovy%20description&callback=__jp2
 class createScenario():
     def GET(self):
         try:
@@ -545,7 +546,7 @@ class createScenario():
             return getResponse(params, response)
         
 #deletes the named scenario in the users folder
-    #https://db-server-blishten.c9users.io/marxan/webAPI2/deleteScenario?user=andrew&scenario=test2&callback=__jp2
+    #https://db-server-blishten.c9users.io/marxan/webAPI2.py/deleteScenario?user=andrew&scenario=test2&callback=__jp2
 class deleteScenario():
     def GET(self):
         try:
@@ -568,7 +569,7 @@ class deleteScenario():
         finally:
             return getResponse(params, response)
 
-#https://db-server-blishten.c9users.io/marxan/webAPI2/renameScenario?user=asd&scenario=wibble&newName=wibble2&callback=__jp2
+#https://db-server-blishten.c9users.io/marxan/webAPI2.py/renameScenario?user=asd&scenario=wibble&newName=wibble2&callback=__jp2
 class renameScenario():
     def GET(self):
         try:
@@ -588,6 +589,30 @@ class renameScenario():
             
             #set the new name as the users last scenario so it will load on login
             updateParameters(user_folder + "user.dat", {'LASTSCENARIO': params['NEWNAME']})
+            
+        except (MarxanServicesError) as e:
+            response.update({'error': e.message})
+
+        finally:
+            return getResponse(params, response)
+
+#https://db-server-blishten.c9users.io/marxan/webAPI2.py/renameDescription?user=andrew&scenario=Sample%20scenario&newDesc=wibble2&callback=__jp2
+class renameDescription():
+    def GET(self):
+        try:
+            #initialise the request objects
+            user_folder, scenario_folder, input_folder, output_folder, response, params = initialiseGetRequest(web.ctx.query[1:])
+            checkScenarioExists(scenario_folder)                
+            
+            #error checking
+            if params["NEWDESC"] == "":
+                raise MarxanServicesError("No new description specified")     
+
+            #update the description
+            updateParameters(scenario_folder + "input.dat", {'DESCRIPTION': params["NEWDESC"]})
+            
+            #add the other items to the response
+            response.update({"info": "Description updated", 'description':params["NEWDESC"]})
             
         except (MarxanServicesError) as e:
             response.update({'error': e.message})
@@ -628,6 +653,9 @@ class updateRunParams:
 class runMarxan:
     def GET(self):
         try:
+            #initialise the logging
+            logging.basicConfig(filename='/home/ubuntu/lib/apache2/log/error.log', level=logging.INFO, format='%(asctime)s %(levelname)s %(message)s')
+            logging.info("Marxan request started")
             #initialise the request objects
             user_folder, scenario_folder, input_folder, output_folder, response, params = initialiseGetRequest(web.ctx.query[1:])
             #update the run parameters in the input.dat file using the passed query parameters
@@ -637,7 +665,7 @@ class runMarxan:
             #delete all of the current output files
             deleteAllFiles(output_folder)
             #run marxan 
-            subprocess.Popen(MARXAN_EXECUTABLE) 
+            p = subprocess.call(MARXAN_EXECUTABLE, stdout=subprocess.PIPE) 
 
         except:
             response.update({'error': sys.exc_info()[0]})
@@ -646,7 +674,7 @@ class runMarxan:
             return getResponse(params, response)
 
 #polls the server for the results of a marxan run and if complete returns the sum of solutions, summary info on all runs and the log
-    #https://db-server-blishten.c9users.io/marxan/webAPI2/pollResults?user=asd2&scenario=Marxan%20default%20scenario&numreps=10&returnall=false&callback=__jp2
+    #https://db-server-blishten.c9users.io/marxan/webAPI2.py/pollResults?user=asd2&scenario=Marxan%20default%20scenario&numreps=10&returnall=false&callback=__jp2
 class pollResults:
     def GET(self):
         try:
@@ -654,12 +682,18 @@ class pollResults:
             user_folder, scenario_folder, input_folder, output_folder, response, params = initialiseGetRequest(web.ctx.query[1:])
             if "NUMREPS" not in params.keys():
                 raise MarxanServicesError("No numreps parameter")
+            
+            if "CHECKFOREXISTINGRUN" not in params.keys():
+                raise MarxanServicesError("No checkForExistingRun parameter")
 
             #see how many runs have been completed
             runsCompleted = len(glob.glob(output_folder + "output_r*"))
             
             #if complete then return the data
             if runsCompleted == int(params['NUMREPS']):
+                
+                #log
+                logging.info("Marxan request finished")
                 
                 #read the log from the log file
                 log = readFile(output_folder + "output_log.dat")
@@ -669,25 +703,22 @@ class pollResults:
                 
                 #get the summed solution as a json string
                 ssoln = getVectorTileOptimisedOutput(output_folder + "output_ssoln.txt", "number")
-                
-                # for solution in solutions if wanted
-                if "RETURNALL" in params.keys():
-                
-                    #iterate through each of the solutions and get the data
-                    solutionFiles = glob.glob(output_folder + "/output_r*")
-                    if (params["RETURNALL"]=='true'):
-                        for f in solutionFiles:
-                            response.update({os.path.basename(f).split(".")[0] : json.loads(pandas.read_csv(f).to_json(orient='values'))})
+
+                #get the info message to return
+                if params["CHECKFOREXISTINGRUN"] == "true":
+                    info = "Existing results loaded"
+                else:
+                    info = "Run succeeded"
                 
                 #add the other items to the response
-                response.update({'info':'Run succeeded', 'log': log, 'sum':json.loads(sum),'ssoln': ssoln})
+                response.update({'info':info, 'log': log, 'sum':json.loads(sum),'ssoln': ssoln})
         
             else:
                 #return the number of runs completed
                 response.update({'info': str(runsCompleted) + " runs completed", 'runsCompleted': runsCompleted})
             
         except (MarxanServicesError) as e:
-            response.update({'error': e.message, 'log': log})
+            response.update({'error': e.message})
 
         except:
             "Unexpected error:", sys.exc_info()[0]
@@ -696,7 +727,7 @@ class pollResults:
             return getResponse(params, response)        
 
 #for loading each individual solutions data
-    #https://db-server-blishten.c9users.io/marxan/webAPI2/loadSolution?user=andrew&scenario=Sample%20scenaio&solution=1&callback=__jp2
+    #https://db-server-blishten.c9users.io/marxan/webAPI2.py/loadSolution?user=andrew&scenario=Sample%20scenaio&solution=1&callback=__jp2
 class loadSolution:
     def GET(self):
         try:
@@ -752,7 +783,7 @@ class postFile:
             return getResponse({}, response)
 
 #updates a parameter in the input.dat file directly, e.g. for updating the MAPID after the user sets their source spatial data
-    #https://db-server-blishten.c9users.io/marxan/webAPI2/updateParameter?user=andrew&scenario=Sample%20scenario&parameter=MAPID&value=wibble&callback=__jp2
+    #https://db-server-blishten.c9users.io/marxan/webAPI2.py/updateParameter?user=andrew&scenario=Sample%20scenario&parameter=MAPID&value=wibble&callback=__jp2
 class updateParameter:
     def GET(self):
         try:
