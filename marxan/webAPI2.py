@@ -1,7 +1,6 @@
 #!/home/ubuntu/anaconda2/bin/python
 #the above line forces the CGI script to use the Anaconda Python interpreter
 import sys, os, web, subprocess, urllib, pandas, json, glob, shutil, re, datetime, logging
-import inotify.adapters
 import geopandas as gpd
 from collections import OrderedDict
 from shutil import copyfile
@@ -380,7 +379,7 @@ class createUser():
                 raise MarxanServicesError("User '" + user + "' already exists")
                 
             #create the folders for the PNG scenario and copy the input.dat file
-            createEmptyScenario(input_folder, output_folder,scenario_folder,"Sample PNG scenario using data from The Nature Conservancy")
+            createEmptyScenario(input_folder, output_folder,scenario_folder,"Sample scenario for Papua New Guinea marine areas developed by The Nature Conservancy and the University of Queensland. For more information visit: http://www.environment.gov.au/marine/publications/national-marine-conservation-assessment-png")
 
             #copy the default user data
             copyfile(MARXAN_FOLDER + 'user.dat', user_folder + 'user.dat')
