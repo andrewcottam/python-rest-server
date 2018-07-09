@@ -1,9 +1,10 @@
 #!/home/ubuntu/anaconda2/bin/python
 #the above line forces the CGI script to use the Anaconda Python interpreter
-import sys, os, web, subprocess, urllib, pandas, json, glob, shutil, re, datetime, logging
+import sys, os, web, subprocess, urllib, pandas, json, glob, shutil, re, datetime, logging, spatialServer, CustomExceptionClasses
 import geopandas as gpd
 from collections import OrderedDict
 from shutil import copyfile
+from CustomExceptionClasses import MarxanServicesError
 
 MARXAN_FOLDER = "/home/ubuntu/workspace/marxan/Marxan243/MarxanData_unix/"
 MARXAN_EXECUTABLE = MARXAN_FOLDER + "MarOpt_v243_Linux64"
@@ -31,13 +32,10 @@ urls = (
   "/pollResults","pollResults",
   "/loadSolution", "loadSolution", 
   "/postFile","postFile",
-  "/updateParameter","updateParameter"
+  "/updateParameter","updateParameter",
+  "/createPlanningUnitsGrid","createPlanningUnitsGrid"
   )
  
-class MarxanServicesError(Exception):
-    """Exception Class that allows the Marxan Services REST Server to raise custom exceptions"""
-    pass
-
 def getQueryStringParams(querystring):
     if len(querystring):
         return dict([(q.split("=")[0].upper(), urllib.unquote(q.split("=")[1])) for q in querystring.split("&")])
@@ -241,15 +239,16 @@ def getScenarios(user):
     scenarios = []
     #iterate through the scenario folders and get the parameters for each scenario to return
     for dir in scenario_folders:
-        #get the scenario name from the folder name
+        #get the name of the folder 
         scenario = dir[:-1][dir[:-1].rfind("/")+1:]
-        #get the data from the input file
-        s = readFile(dir + 'input.dat')
-        #get the description
-        desc = getInputParameter(dir + 'input.dat',"DESCRIPTION")
-        createDate = getInputParameter(dir + 'input.dat',"CREATEDATE")
-        #create a dict to save the data
-        scenarios.append({'name':scenario,'description':desc,'createdate': createDate})
+        if (scenario[:2] != "__"): #folders beginning with __ are system folders
+            #get the data from the input file
+            s = readFile(dir + 'input.dat')
+            #get the description
+            desc = getInputParameter(dir + 'input.dat',"DESCRIPTION")
+            createDate = getInputParameter(dir + 'input.dat',"CREATEDATE")
+            #create a dict to save the data
+            scenarios.append({'name':scenario,'description':desc,'createdate': createDate})
     return scenarios
 
 def createEmptyScenario(input_folder, output_folder,scenario_folder, description):
@@ -378,6 +377,13 @@ class createUser():
             if user in users:
                 raise MarxanServicesError("User '" + user + "' already exists")
                 
+            #create the systems folders for the user
+            if not os.path.exists(user_folder + "__shapefiles"):
+                os.makedirs(user_folder + "__shapefiles")
+            
+            # if not os.path.exists(user_folder + "__shapefiles"):
+            #     os.makedirs(user_folder + "__shapefiles")
+            
             #create the folders for the PNG scenario and copy the input.dat file
             createEmptyScenario(input_folder, output_folder,scenario_folder,"Sample scenario for Papua New Guinea marine areas developed by The Nature Conservancy and the University of Queensland. For more information visit: http://www.environment.gov.au/marine/publications/national-marine-conservation-assessment-png")
 
@@ -798,6 +804,44 @@ class updateParameter:
                 raise MarxanServicesError("No parameter value")
             updateParameters(scenario_folder + "input.dat", {params["PARAMETER"]: params["VALUE"]})
             response.update({'info': "Parameter updated"})
+            
+        except (MarxanServicesError) as e:
+            response.update({'error': e.message})
+
+        finally:
+            return getResponse(params, response)
+
+#creates a hexagon grid on the server to use for partitioning the area of interest into hexagons
+    #https://db-server-blishten.c9users.io/marxan/webAPI.py/createPlanningUnitsGrid?user=andrew&scenario=Sample%20scenario2&type=hexagon&area=50000000&minx=13405242.3514&miny=-1872878.36099&maxx=15678140.8211&maxy=333209.676673&name=test_hexagon
+class createPlanningUnitsGrid:
+    def GET(self):
+        try:
+            #initialise the request objects
+            user_folder, scenario_folder, input_folder, output_folder, response, params = initialiseGetRequest(web.ctx.query[1:])
+            if "USER" not in params.keys():
+                raise MarxanServicesError("No user parameter")
+            if "SCENARIO" not in params.keys():
+                raise MarxanServicesError("No scenario parameter")
+            if "TYPE" not in params.keys():
+                raise MarxanServicesError("No type parameter")
+            if "AREA" not in params.keys():
+                raise MarxanServicesError("No area parameter")
+            if "MINX" not in params.keys():
+                raise MarxanServicesError("No minx parameter")
+            if "MINY" not in params.keys():
+                raise MarxanServicesError("No miny parameter")
+            if "MAXX" not in params.keys():
+                raise MarxanServicesError("No maxx parameter")
+            if "MAXY" not in params.keys():
+                raise MarxanServicesError("No maxy parameter")
+            if "NAME" not in params.keys():
+                raise MarxanServicesError("No name parameter")
+            
+            #create the grid
+            msg = spatialServer.CreatePUGrid(params["TYPE"],float(params["AREA"]),float(params["MINX"]),float(params["MINY"]),float(params["MAXX"]),float(params["MAXY"]),params["NAME"])
+
+            #return the response
+            response.update({'info': msg})
             
         except (MarxanServicesError) as e:
             response.update({'error': e.message})

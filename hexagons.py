@@ -1,13 +1,13 @@
-import math, pandas, fiona
+import math, fiona
 import geopandas as gpd
-from shapely.geometry import Point, Polygon
-from fiona.crs import from_epsg
+import matplotlib.pyplot as plt
+from shapely.geometry import Polygon
 from math import floor, ceil
 
 def CreateHexGrid(area, xleft, ybottom, xright, ytop, savename):
     #error checks
-    if area < 0:
-        return "Area is invalid"
+    if area <0:
+        raise MarxanServicesError("Area value is invalid")
         
     if len(savename) <= 0:
         return "No output filename given"
@@ -17,19 +17,24 @@ def CreateHexGrid(area, xleft, ybottom, xright, ytop, savename):
     
     if (ybottom >= ytop):
         return "Invalid extent height: " + unicode(ybottom) + " - " + unicode(ytop)
-    
+        
     #calculate the spacing between the hexagons to give you the required area
     sideLength = math.sqrt((2*area)/(3*math.sqrt(3)))
     xspacing = sideLength + (sideLength * 0.5) # the cos(60) = 0.5
     yspacing = xspacing / 0.866025
+    print "area: " + str(area) 
+    print "minx: " + str(xleft)
+    print "miny: " + str(ybottom)
+    print "maxx: " + str(xright)
+    print "maxy: " + str(ytop)
+    print "sideLength: " + str(sideLength)
+    print "xspacing: " + str(xspacing)
+    print "yspacing: " + str(yspacing)
 
     #create a new geodataframe to store the hexagons
     newdata = gpd.GeoDataFrame()
-    
-    #set the coordinate reference systems as 3410 (NSIDC Ease-Grid Global) - An equal area projection
-    # newdata.crs = from_epsg(4326)
-    newdata.crs = from_epsg(3410)
-    
+    newdata.crs = {'init' :'epsg:3410'}
+       
     #create the geometry field and an id field
     newdata['geometry'] = None
     newdata['id'] = None
@@ -37,6 +42,7 @@ def CreateHexGrid(area, xleft, ybottom, xright, ytop, savename):
     #get the number of rows/columns
     rows = int(ceil((ytop - ybottom) / yspacing))
     columns = int(ceil((xright - xleft) / xspacing))
+    print "rows, columns: " + str(rows) + " " + str( columns)
     
     #initialise the feature counter
     feature_count = 0
@@ -83,16 +89,22 @@ def CreateHexGrid(area, xleft, ybottom, xright, ytop, savename):
             
             #increment the counter
             feature_count = feature_count + 1
-    
+        print "Finished column " + str(column)
+
     # Write the data into that Shapefile
-    newdata.to_file(savename)
-
-#get the hexagon side length for the required area
-area = 10000000
-xleft = 6676
-ybottom = 860924
-xright = 43711
-ytop = 878065
-savename = r"/home/ubuntu/workspace/test_hexagon.shp"
-
-CreateHexGrid(area, xleft, ybottom, xright, ytop, savename)
+    newdata.to_file("E:/cottaan/Documents/ArcGIS/Datasets/" + savename + ".shp")
+    
+    # Write the prj file as it doesnt get produced
+    file = open("E:/cottaan/Documents/ArcGIS/Datasets/" + savename + ".prj","w") 
+    file.write('PROJCS["NSIDC_EASE_Grid_Global",GEOGCS["GCS_Unspecified datum based upon the International 1924 Authalic Sphere",DATUM["D_Sphere_International_1924_Authalic",SPHEROID["International_1924_Authalic_Sphere",6371228,0]],PRIMEM["Greenwich",0],UNIT["Degree",0.017453292519943295]],PROJECTION["Cylindrical_Equal_Area"],PARAMETER["standard_parallel_1",30],PARAMETER["central_meridian",0],PARAMETER["false_easting",0],PARAMETER["false_northing",0],UNIT["Meter",1]]') 
+    file.close()
+    
+    return "Hexagon grid created"
+    
+if __name__ == '__main__':
+    minx=15493606.659212
+    miny=-1619468.923921
+    maxx=18127948.141806
+    maxy=291517.825493
+    CreateHexGrid(50000000, minx,  miny, maxx, maxy,'test9')
+    print "wibble"
