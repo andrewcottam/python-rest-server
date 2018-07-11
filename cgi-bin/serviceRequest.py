@@ -217,7 +217,7 @@ def callservice(conn, schemaname, servicename, querystring):
         else:
             raise RESTServicesError('Invalid response format: ' + format)
 
-    except (RESTServicesError, DataError, ProgrammingError, exceptions.TypeError, IndexError, IntegrityError, AmazonError, OperationalError) as e:
+    except (RESTServicesError, DataError, ProgrammingError, exceptions.TypeError, IndexError, IntegrityError, AmazonError, OperationalError, psycopg2.InternalError) as e:
 #        web.webapi.internalerror() #returns a internal server error 500
         t2 = datetime.datetime.now()
         msg = "There was an error sending the email. Make sure that the email address has been verified in Amazon Simple Email Services" if type(e) == AmazonError else e.message
