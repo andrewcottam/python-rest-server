@@ -305,6 +305,7 @@ def CreateGrid(pu_folder, _type, area, xleft, ybottom, xright, ytop):
     rows = int(math.ceil((ytop - ybottom) / yspacing))
     columns = int(math.ceil((xright - xleft) / xspacing))
     
+    logging.info("SIDELENGTH: " + str(sideLength))
     logging.info("ROWS: " + str(rows))
     logging.info("COLUMNS: " + str(columns))
     logging.info("XSPACING: " + str(xspacing))
