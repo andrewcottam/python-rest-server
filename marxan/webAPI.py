@@ -30,6 +30,7 @@ urls = (
   "/listScenarios", "listScenarios",
   "/getScenario","getScenario",
   "/createScenario", "createScenario",
+  "/createScenarioFromWizard", "createScenarioFromWizard",
   "/deleteScenario", "deleteScenario",
   "/renameScenario", "renameScenario",
   "/renameDescription", "renameDescription",
@@ -43,8 +44,10 @@ urls = (
   "/updateParameter","updateParameter",
   "/createPlanningUnitsGrid","createPlanningUnitsGrid", #python implementation
   "/createPlanningUnits","createPlanningUnits", #postgis implementation
-  "/uploadTilesetToMapBox","uploadTilesetToMapBox"
-  
+  "/uploadTilesetToMapBox","uploadTilesetToMapBox",
+  "/createPUdatafile","createPUdatafile",
+  "/getInterestFeaturesForScenario","getInterestFeaturesForScenario",
+  "/deleteInterestFeature","deleteInterestFeature"
   )
  
 def getQueryStringParams(querystring):
@@ -963,8 +966,8 @@ class postShapefile:
 		finally:
 			return getResponse({}, response)
 
-#imports a shapefile that already exists on the server into postgis
-	#https://db-server-blishten.c9users.io/marxan/webAPI.py/importShapefile?filename=png_provinces.zip&name=png_provinces&description=wibble&callback=__jp2
+#imports a shapefile that already exists on the server into postgis and optionally dissolves it (if it is an interest feature)
+	#https://db-server-blishten.c9users.io/marxan/webAPI.py/importShapefile?filename=png_provinces.zip&name=png_provinces&description=wibble&dissolve=true&callback=__jp2
 class importShapefile:
 	def GET(self):
 		try:
@@ -978,10 +981,15 @@ class importShapefile:
 			if "NAME" not in params.keys():
 				raise MarxanServicesError("No name value")
 			if "DESCRIPTION" not in params.keys():
-				raise MarxanServicesError("No description value")
+				raise MarxanServicesError("No description value")                                   
+			if "DISSOLVE" not in params.keys():
+				raise MarxanServicesError("No dissolve value")
 			
 			#unzip the shapefile
 			filename = params['FILENAME']
+			if not os.path.exists(MARXAN_FOLDER + filename):
+				raise MarxanServicesError("The zip file '" + filename + "' does not exist")
+
 			logging.info("Unzipping the " + filename + " shapefile")
 			zip_ref = zipfile.ZipFile(MARXAN_FOLDER + filename, 'r')
 			zip_ref.extractall(MARXAN_FOLDER)
@@ -990,13 +998,45 @@ class importShapefile:
 			#import the shapefile
 			shapefile = filename[:-3] + 'shp'
 			logging.info("Importing the " + shapefile + " shapefile into PostGIS")
-			cmd = '/home/ubuntu/anaconda2/bin/ogr2ogr -f "PostgreSQL" PG:"host=localhost user=jrc dbname=biopama password=thargal88" /home/ubuntu/workspace/marxan/Marxan243/MarxanData_unix/png_provinces.shp -nlt GEOMETRY -lco SCHEMA=marxan'
+			#the ogc_fid field that is produced is an autonumbering oid
+			if params['DISSOLVE']=='true':
+				#if we want to dissolve the shapefile, then produce a tmp feature class
+				cmd = '/home/ubuntu/anaconda2/bin/ogr2ogr -f "PostgreSQL" PG:"host=localhost user=jrc dbname=biopama password=thargal88" /home/ubuntu/workspace/marxan/Marxan243/MarxanData_unix/' + shapefile + ' -nlt GEOMETRY -lco SCHEMA=marxan -nln undissolved'
+				logging.info("Imported into marxan.undissolved")
+			else:
+				cmd = '/home/ubuntu/anaconda2/bin/ogr2ogr -f "PostgreSQL" PG:"host=localhost user=jrc dbname=biopama password=thargal88" /home/ubuntu/workspace/marxan/Marxan243/MarxanData_unix/' + shapefile + ' -nlt GEOMETRY -lco SCHEMA=marxan'
+				logging.info("Imported into marxan." + filename[:-4])
+				
 			os.system(cmd) #this wont capture any errors!!!
 			
 			#delete the zip file and the shapefile
 			files = glob.glob(MARXAN_FOLDER + filename[:-3] + '*')
 			if len(files)>0:
 				[os.remove(f) for f in files]            
+			
+			#insert a record in the metadata_interest_features table
+			try:
+				#connect to the db
+				conn = psycopg2.connect("dbname='biopama' host='localhost' user='jrc' password='thargal88'")
+				cur = conn.cursor()
+	
+				#if we want to dissolve the shapefile then do so now by querying the temporary feature class
+				if params['DISSOLVE']=='true':
+					cur.execute("SELECT ST_Union(wkb_geometry) INTO marxan." + filename[:-4] + " FROM marxan.undissolved;")	
+					cur.execute("DROP TABLE IF EXISTS marxan.undissolved;")	
+					logging.info("Dissolved and imported into marxan." + filename[:-4])
+
+				#populate the metadata information for the planning units feature class
+				cur.execute("INSERT INTO marxan.metadata_interest_features(feature_class_name,alias,description,creation_date) values ('" + filename[:-4] + "','" + params['NAME'] + "','" + params['DESCRIPTION'] + "',now());")
+				logging.info("Metadata record created")
+				
+			except (psycopg2.InternalError, psycopg2.IntegrityError,psycopg2.ProgrammingError) as e: #postgis error
+				raise MarxanServicesError("Error importing shapefile: " + e.message)
+				
+			finally:
+				cur.close()
+				conn.commit()
+				conn.close()
 			
 			#write the response
 			response = {'info': "File '" + shapefile + "' imported"}
@@ -1208,6 +1248,167 @@ class createPlanningUnits:
 		except:
 			response.update({'error': str(sys.exc_info()[1])})
 
+		finally:
+			return getResponse(params, response)
+
+#creates the pu.dat file using the passed paramters - used in the web API and internally in the createScenarioFromWizard function
+def _createPUdatafile(scenario_folder, input_folder, planning_grid_name):
+	#create the pu.dat file
+	try:
+		#connect to the db
+		conn = psycopg2.connect("dbname='biopama' host='localhost' user='jrc' password='thargal88'")
+		cur = conn.cursor()
+
+		#run the query to create the pu.dat file
+		with open(input_folder + 'pu.dat', 'w') as f:
+		    cur.copy_expert("COPY (SELECT id,1::double precision as cost,0::integer as status FROM marxan." + planning_grid_name + ") TO STDOUT WITH CSV HEADER;", f)
+
+		logging.info("pu.dat file created in folder " + input_folder)
+		
+	except (psycopg2.InternalError, psycopg2.IntegrityError, IOError) as e: #postgis error
+		raise MarxanServicesError("Error creating pu.dat file: " + e.message)
+		
+	finally:
+		cur.close()
+		conn.commit()
+		conn.close()
+	
+	#update the input.dat file
+	updateParameters(scenario_folder + "input.dat", {'PUNAME': 'pu.dat'})
+
+
+#creates the marxan planning unit data file, pu.dat in the folder for the given user and scenario using the planning_grid_name which corresponds to a feature class in the postgis database
+	#https://db-server-blishten.c9users.io/marxan/webAPI.py/createPUdatafile?user=asd&scenario=test&planning_grid_name=pu_asm_terrestrial_hexagons_10
+class createPUdatafile:
+	def GET(self):
+		try:
+			#initialise the request objects
+			user_folder, scenario_folder, input_folder, output_folder, response, params = initialiseGetRequest(web.ctx.query[1:])
+			if "PLANNING_GRID_NAME" not in params.keys():
+				raise MarxanServicesError("No planning grid")
+			
+			#create the pu.dat file
+			_createPUdatafile(scenario_folder, input_folder, params["PLANNING_GRID_NAME"])
+				
+			#set the response
+			response.update({'info': "pu.dat file created"})
+			
+		except (MarxanServicesError) as e:
+			response.update({'error': e.message})
+
+		finally:
+			return getResponse(params, response)
+
+#creates a new scenario in the users folder using input from the marxan web wizard
+	#https://db-server-blishten.c9users.io/marxan/webAPI.py/createScenarioFromWizard?user=asd&scenario=test&description=whatever&planning_grid_name=pu_asm_terrestrial_hexagons_10
+class createScenarioFromWizard():
+	def GET(self):
+		try:
+			#initialise the request objects
+			user_folder, scenario_folder, input_folder, output_folder, response, params = initialiseGetRequest(web.ctx.query[1:])
+
+			#check the scenario doesnt already exist
+			if (os.path.exists(scenario_folder)):
+				raise MarxanServicesError("Scenario '" + params["SCENARIO"] + "' already exists") 
+
+			#get the description
+			if "DESCRIPTION" in params.keys():
+				description = params["DESCRIPTION"]
+			else:
+				description = "No description"
+
+			#create the folders for the scenario and copy the input.dat file
+			createEmptyScenario(input_folder, output_folder, scenario_folder, description)
+			
+			#create the pu.dat file
+			_createPUdatafile(scenario_folder, input_folder, params["PLANNING_GRID_NAME"])
+
+			#set the response
+			response.update({'info': "Scenario '" + params["SCENARIO"] + "' created", 'name': params["SCENARIO"], 'description': description})
+
+		except (MarxanServicesError) as e:
+			response.update({'error': e.message})
+
+		finally:
+			return getResponse(params, response)
+		
+#gets the data for the interest features for the passed scenario
+	#https://db-server-blishten.c9users.io/marxan/webAPI.py/getInterestFeaturesForScenario?user=asd&scenario=test
+class getInterestFeaturesForScenario:
+	def GET(self):
+		try:
+			#initialise the request objects
+			user_folder, scenario_folder, input_folder, output_folder, response, params = initialiseGetRequest(web.ctx.query[1:])
+			
+			try:
+				#get the values from the spec.dat file 
+				df = pandas.read_csv(input_folder + "spec.dat")
+				
+				#connect to the db
+				conn = psycopg2.connect("dbname='biopama' host='localhost' user='jrc' password='thargal88'")
+				
+				#get the values from the marxan.metadata_interest_features table
+				df2 = pandas.read_sql_query('select oid,* from marxan.metadata_interest_features',con=conn)   
+				
+				#join the dataframes using the id field as the key from the spec.dat file and the oid as the key from the metadata_interest_features table
+				output_df = df.set_index("id").join(df2.set_index("oid"))[['feature_class_name','alias','description','spf','prop']]
+				output_df['oid']=output_df.index
+				_json = output_df.to_dict(orient="records")
+				
+			except (psycopg2.InternalError, psycopg2.IntegrityError) as e: #postgis error
+				raise MarxanServicesError("Error creating planning units: " + e.message)
+				
+			finally:
+				conn.close()
+			
+				#write the response
+				response = {'info': _json}
+			
+		except (MarxanServicesError) as e:
+			response.update({'error': e.message})
+
+		finally:
+			return getResponse(params, response)
+
+#deletes the interest feature dataset from postgis and removes the record in the metadata_interest_features table
+	#https://db-server-blishten.c9users.io/marxan/webAPI.py/deleteInterestFeature?interest_feature_name=png_provinces
+class deleteInterestFeature:
+	def GET(self):
+		try:
+			#get the query string parameters
+			params = getQueryStringParams(web.ctx.query[1:])
+			response = {}
+	
+			#error checking
+			if "INTEREST_FEATURE_NAME" not in params.keys():
+				raise MarxanServicesError("No interest_feature_name parameter")
+			
+			#drop the record in the metadata_interest_features table
+			try:
+				#connect to the db
+				conn = psycopg2.connect("dbname='biopama' host='localhost' user='jrc' password='thargal88'")
+				cur = conn.cursor()
+	
+				#populate the metadata information for the planning units feature class
+				cur.execute("DELETE FROM marxan.metadata_interest_features WHERE alias = '" + params['INTEREST_FEATURE_NAME'] + "';")
+				logging.info("Metadata record deleted for '" + params['INTEREST_FEATURE_NAME'] + "'")
+				cur.execute("DROP TABLE IF EXISTS marxan." + params['INTEREST_FEATURE_NAME'] + ";")
+				logging.info(params['INTEREST_FEATURE_NAME'] + " table dropped")
+				
+			except (psycopg2.InternalError, psycopg2.IntegrityError) as e: #postgis error
+				raise MarxanServicesError("Error creating planning units: " + e.message)
+				
+			finally:
+				cur.close()
+				conn.commit()
+				conn.close()
+			
+				#write the response
+				response = {'info': "Interest feature '" + params['INTEREST_FEATURE_NAME'] + "' deleted"}
+			
+		except (MarxanServicesError) as e:
+			response = {'error': e.message}
+	
 		finally:
 			return getResponse(params, response)
 
