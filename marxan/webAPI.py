@@ -5,6 +5,7 @@ import geopandas as gpd
 from collections import OrderedDict
 from shutil import copyfile
 from CustomExceptionClasses import MarxanServicesError
+from pandas.io.sql import DatabaseError
 from mapbox import Uploader
 from mapbox import errors
 
@@ -68,6 +69,19 @@ def readFile(filename):
 	f.close()
 	return s
 
+def createZipfile(lstFileNames, folder, zipfilename):
+	with zipfile.ZipFile(folder + zipfilename, 'w') as myzip:
+	    for f in lstFileNames:   
+	        arcname = os.path.split(f)[1]
+	        myzip.write(f,arcname)
+	        
+#deletes a zip file and the archive files, e.g. deleteZippedShapefile(MARXAN_FOLDER, "png_provinces.zip", "pngprov")
+def deleteZippedShapefile(folder, zipfilename, archivename):
+	os.remove(folder + zipfilename)	
+	files = glob.glob(folder + archivename + '.*')
+	if len(files)>0:
+		[os.remove(f) for f in files]       
+	
 #gets the key value combination from the text, e.g. PUNAME pu.dat    
 def getKeyValue(text, parameterName):
 	p1 = text.index(parameterName)
@@ -98,7 +112,7 @@ def getKeys(s):
 	#instantiate the return arrays
 	keys = []
 	#get all the parameter keys
-	matches = re.findall('\\n[A-Z1-9]{2,}', s, re.DOTALL)
+	matches = re.findall('\\n[A-Z1-9_]{2,}', s, re.DOTALL)
 	return [m[1:] for m in matches]
   
 def getUserData(filename):
@@ -129,19 +143,20 @@ def getInputParameters(filename):
 	s = readFile(filename)
 	#get the keys from the file
 	keys = getKeys(s)
+	logging.info(keys)
 	#iterate through the keys and get their values
 	for k in keys:
 		#some parameters we do not need to return
-		if k in ["PUNAME","SPECNAME","PUVSPRNAME","BOUNDNAME","BLOCKDEF"]:
-			key, value = getKeyValue(s, k)
+		if k in ["PUNAME","SPECNAME","PUVSPRNAME","BOUNDNAME","BLOCKDEF"]: # Input Files section of input.dat file
+			key, value = getKeyValue(s, k) 
 			filesDict.update({ key:  value})
 		elif k in ['BLM', 'PROP', 'RANDSEED', 'NUMREPS', 'NUMITNS', 'STARTTEMP', 'NUMTEMP', 'COSTTHRESH', 'THRESHPEN1', 'THRESHPEN2', 'SAVERUN', 'SAVEBEST', 'SAVESUMMARY', 'SAVESCEN', 'SAVETARGMET', 'SAVESUMSOLN', 'SAVEPENALTY', 'SAVELOG', 'RUNMODE', 'MISSLEVEL', 'ITIMPTYPE', 'HEURTYPE', 'CLUMPTYPE', 'VERBOSITY', 'SAVESOLUTIONSMATRIX']:
-			key, value = getKeyValue(s, k)
+			key, value = getKeyValue(s, k) #run parameters 
 			paramsArray.append({'key': key, 'value': value})
-		elif k in ['DESCRIPTION','CREATEDATE','MAPID']:
+		elif k in ['DESCRIPTION','CREATEDATE','PLANNING_UNIT_NAME']: # metadata section of the input.dat file
 			key, value = getKeyValue(s, k)
 			metadataDict.update({key: value})
-		elif k in ['CLASSIFICATION', 'NUMCLASSES','COLORCODE', 'TOPCLASSES','OPACITY']:
+		elif k in ['CLASSIFICATION', 'NUMCLASSES','COLORCODE', 'TOPCLASSES','OPACITY']: # renderer section of the input.dat file
 			key, value = getKeyValue(s, k)
 			rendererDict.update({key: value})
 						
@@ -404,23 +419,33 @@ class uploadTilesetToMapBox():
 			response = {}
 			if "FEATURE_CLASS_NAME" not in params.keys():
 				raise MarxanServicesError("No feature_class_name specified") 
-			
+			if "MAPBOX_LAYER_NAME" not in params.keys():
+				raise MarxanServicesError("No mapbox_layer_name specified") 
+
 			#get the feature class name
 			feature_class_name = params["FEATURE_CLASS_NAME"]
 			
-			#create the file to upload to MapBox
+			#get the mapbox layer name
+			mapbox_layer_name = params["MAPBOX_LAYER_NAME"]
+			
+			#create the file to upload to MapBox - now using shapefiles as kml files only import the name and description properties into a mapbox tileset
 			logging.info("Uploading " + feature_class_name + " to MapBox")
-			outputFile = MARXAN_FOLDER + feature_class_name + '.kml'
-			cmd = '/home/ubuntu/anaconda2/bin/ogr2ogr -f kml ' + outputFile + ' "PG:host=localhost dbname=biopama user=jrc password=thargal88" -sql "select * from Marxan.' + feature_class_name + '" -nln hexagons -s_srs EPSG:3410 -t_srs EPSG:3857'
+			outputFile = MARXAN_FOLDER + feature_class_name + '.shp'
+			cmd = '/home/ubuntu/anaconda2/bin/ogr2ogr -f "ESRI Shapefile" ' + outputFile + ' "PG:host=localhost dbname=biopama user=jrc password=thargal88" -sql "select * from Marxan.' + feature_class_name + '" -nln ' + mapbox_layer_name + ' -s_srs EPSG:3410 -t_srs EPSG:3857'
 			os.system(cmd)
+
+			#zip the shapefile to upload to Mapbox
+			lstFilenames = glob.glob(MARXAN_FOLDER + feature_class_name + '.*')
+			zipfilename = MARXAN_FOLDER + feature_class_name + ".zip"
+			createZipfile(lstFilenames, MARXAN_FOLDER, feature_class_name + ".zip")
 			
 			#upload to mapbox
-			uploadId = uploadTileset(outputFile, feature_class_name)
+			uploadId = uploadTileset(zipfilename, feature_class_name)
 			#set the response for uploading to mapbox
 			response.update({'info': "Tileset '" + feature_class_name + "' uploading",'uploadid': uploadId})
 
-			#delete the temporary kml file
-			os.remove( MARXAN_FOLDER + feature_class_name + '.kml')
+			#delete the temporary shapefile file and zip file
+			deleteZippedShapefile(MARXAN_FOLDER, zipfilename, feature_class_name)
 			
 		except (MarxanServicesError) as e: 
 			response.update({'error': e.message})
@@ -554,7 +579,7 @@ class createUser():
 			copyfile(MARXAN_INPUT_FOLDER + 'spec_png.dat', input_folder + 'spec_png.dat')
 
 			#update the input.dat file with information on the input files
-			updateParameters(scenario_folder + "input.dat", {'PUNAME': 'pu_png.dat','SPECNAME': 'spec_png.dat','PUVSPRNAME': 'puvspr_png.dat','BOUNDNAME': 'bound_png.dat','MAPID': SAMPLE_TILESET_ID_PNG})
+			updateParameters(scenario_folder + "input.dat", {'PUNAME': 'pu_png.dat','SPECNAME': 'spec_png.dat','PUVSPRNAME': 'puvspr_png.dat','BOUNDNAME': 'bound_png.dat','PLANNING_UNIT_NAME': SAMPLE_TILESET_ID_PNG})
 
 			#create another scenario for the marxan default data 
 			data["scenario"] = "Marxan default"
@@ -570,7 +595,7 @@ class createUser():
 			copyfile(MARXAN_INPUT_FOLDER + 'spec_orig.dat', input_folder + 'spec.dat')
 			
 			#update the input.dat file with information on the input files
-			updateParameters(scenario_folder + "input.dat", {'PUNAME': 'pu.dat','SPECNAME': 'spec.dat','PUVSPRNAME': 'puvspr.dat','BOUNDNAME': 'bound.dat','MAPID': SAMPLE_TILESET_ID})
+			updateParameters(scenario_folder + "input.dat", {'PUNAME': 'pu.dat','SPECNAME': 'spec.dat','PUVSPRNAME': 'puvspr.dat','BOUNDNAME': 'bound.dat','PLANNING_UNIT_NAME': SAMPLE_TILESET_ID})
 
 			#update the user.dat file with information from the POST request
 			updateParameters(user_folder + "user.dat", {'NAME': data.name,'EMAIL': data.email,'PASSWORD': data.password,'MAPBOXACCESSTOKEN': data.mapboxaccesstoken})
@@ -818,7 +843,7 @@ class runMarxan:
 			#initialise the logging
 			logging.basicConfig(filename='/home/ubuntu/lib/apache2/log/error.log', level=logging.INFO, format='%(asctime)s %(levelname)s %(message)s')
 			logging.info("Marxan request started")
-			#initialise the request objects
+			#initialise the request objectIs
 			user_folder, scenario_folder, input_folder, output_folder, response, params = initialiseGetRequest(web.ctx.query[1:])
 			#update the run parameters in the input.dat file using the passed query parameters
 			updateParameters(scenario_folder + "input.dat", params)
@@ -1058,8 +1083,8 @@ class importShapefile:
 		finally:
 			return getResponse(params, response)
 		
-#updates a parameter in the input.dat file directly, e.g. for updating the MAPID after the user sets their source spatial data
-	#https://db-server-blishten.c9users.io/marxan/webAPI2.py/updateParameter?user=andrew&scenario=Sample%20scenario&parameter=MAPID&value=wibble&callback=__jp2
+#updates a parameter in the input.dat file directly, e.g. for updating the PLANNING_UNIT_NAME after the user sets their source spatial data
+	#https://db-server-blishten.c9users.io/marxan/webAPI2.py/updateParameter?user=andrew&scenario=Sample%20scenario&parameter=DESCRIPTION&value=wibble&callback=__jp2
 class updateParameter:
 	def GET(self):
 		try:
@@ -1274,7 +1299,7 @@ def _createPUdatafile(scenario_folder, input_folder, planning_grid_name):
 
 		#run the query to create the pu.dat file
 		with open(input_folder + 'pu.dat', 'w') as f:
-		    cur.copy_expert("COPY (SELECT id,1::double precision as cost,0::integer as status FROM marxan." + planning_grid_name + ") TO STDOUT WITH CSV HEADER;", f)
+		    cur.copy_expert("COPY (SELECT puid as id,1::double precision as cost,0::integer as status FROM marxan." + planning_grid_name + ") TO STDOUT WITH CSV HEADER;", f)
 
 		logging.info("pu.dat file created in folder " + input_folder)
 		
@@ -1320,24 +1345,29 @@ def _getInterestFeaturesForScenario(input_folder):
 		#get the values from the spec.dat file  for the scenario
 		df = pandas.read_csv(input_folder + "spec.dat")
 		
-		#connect to the db
-		conn = psycopg2.connect("dbname='biopama' host='localhost' user='jrc' password='thargal88'")
+		try:
+			#connect to the db
+			conn = psycopg2.connect("dbname='biopama' host='localhost' user='jrc' password='thargal88'")
+			
+			#get the values from the marxan.metadata_interest_features table
+			df2 = pandas.read_sql_query('select oid,* from marxan.metadata_interest_features',con=conn)   
+			
+			#join the dataframes using the id field as the key from the spec.dat file and the oid as the key from the metadata_interest_features table
+			output_df = df.set_index("id").join(df2.set_index("oid"))[['feature_class_name','alias','description','spf','prop']]
+			
+			#add the index as a column
+			output_df['oid']=output_df.index
+	
+		except (psycopg2.InternalError, psycopg2.IntegrityError) as e: #postgis error
+			raise MarxanServicesError("Error getting interest features for scenario: " + e.message)
 		
-		#get the values from the marxan.metadata_interest_features table
-		df2 = pandas.read_sql_query('select oid,* from marxan.metadata_interest_features',con=conn)   
-		
-		#join the dataframes using the id field as the key from the spec.dat file and the oid as the key from the metadata_interest_features table
-		output_df = df.set_index("id").join(df2.set_index("oid"))[['feature_class_name','alias','description','spf','prop']]
-		
-		#add the index as a column
-		output_df['oid']=output_df.index
+		finally:
+			conn.close()
 
-	except (psycopg2.InternalError, psycopg2.IntegrityError) as e: #postgis error
-		raise MarxanServicesError("Error getting interest features for scenario: " + e.message)
-		
-	finally:
-		conn.close()
-		return output_df #return a pandas dataframe	
+	except Exception: #general error if the input_folder doesnt exist
+		raise 
+
+	return output_df #return a pandas dataframe	
 	
 #creates the marxan planning unit data file, pu.dat in the folder for the given user and scenario using the planning_grid_name which corresponds to a feature class in the postgis database
 	#https://db-server-blishten.c9users.io/marxan/webAPI.py/createPUdatafile?user=asd&scenario=test&planning_grid_name=pu_asm_terrestrial_hexagons_10
@@ -1377,6 +1407,7 @@ class createPUVSPRdatafile:
 			
 			#get the interest features that already have records in the puvspr.dat file or an empty dataframe if the file does not exist
 			if (os.path.exists(input_folder + "puvspr.dat")):
+				logging.info("Getting features already processed in " + input_folder + "puvspr.dat")
 				df = pandas.read_csv(input_folder + "puvspr.dat", sep='\t')
 			else:
 				# no file so create an empty data frame to hold the data for the puvspr.dat file
@@ -1386,10 +1417,12 @@ class createPUVSPRdatafile:
 				
 			#get the unique interest features that have already been processed
 			feature_ids_already_processed = df.species.unique() #as a numpy.ndarray
+			logging.info("Feature ids already processed: " + ','.join([str(s) for s in feature_ids_already_processed]))
 			
 			#get the features that need to be processed
 			feature_ids_to_process = list(set(feature_ids) - set(feature_ids_already_processed))
-
+			logging.info("Features ids to process: " + ','.join([str(s) for s in feature_ids_to_process]))
+			
 			#get the column index of the oid field in the interest features
 			oid_index = features.columns.values.tolist().index('oid')
 			
@@ -1398,34 +1431,37 @@ class createPUVSPRdatafile:
 
 			#filter the filters by the oid field
 			features_to_process = [f[feature_class_name_index] for f in features.values.tolist() if f[oid_index] in feature_ids_to_process]
+			logging.info("Features to process: " + ','.join(features_to_process))
 			
 			#iterate through the interest features and do the intersection
 			try:
 				conn = psycopg2.connect("dbname='biopama' host='localhost' user='jrc' password='thargal88'")
-			
 				for feature in features_to_process:
 					#intersect the features with the planning units
-					logging.info("Intersecting '" + feature + "' with '" + params['PLANNING_GRID_NAME']);
-					df2 = pandas.read_sql_query("select * from marxan.get_pu_areas_for_interest_feature('" + params['PLANNING_GRID_NAME'] + "','" + feature + "');",con=conn)   
+					logging.info("Intersecting '" + feature + "' with '" + params['PLANNING_GRID_NAME'] + "'");
+					query = "select * from marxan.get_pu_areas_for_interest_feature('" + params['PLANNING_GRID_NAME'] + "','" + feature + "');"
+					# logging.info(query)
+					df2 = pandas.read_sql_query(query,con=conn)   
+					logging.info(str(len(df2.index)) + " intersecting planning units")
 					df = df.append(df2)
 				
 				#write the results to the puvspr.dat file
 				df.to_csv(input_folder + "puvspr.dat", sep='\t',index =False)
 				
-			except (psycopg2.InternalError, psycopg2.IntegrityError) as e: #postgis error
-				raise MarxanServicesError("Error creating puvspr.dat file: " + e.message)
+			except (psycopg2.InternalError, psycopg2.IntegrityError, DatabaseError) as e: #postgis error
+				raise MarxanServicesError("Error creating puvspr.dat file: " + e.message + ". Error type: " + str(sys.exc_info()[0]))
 			
 			finally:
-				conn.close()
+				conn.close() 
+
+			#update the input.dat file
+			updateParameters(scenario_folder + "input.dat", {'PUVSPRNAME': 'puvspr.dat'})
 			
 			#set the response
 			response.update({'info': "puvspr.dat file created"})
 			
-		except (MarxanServicesError) as e:
-			response.update({'error': e.message})
-
-		except Exception:
-			response.update({'error': sys.exc_info()[1]})
+		except Exception as inst: #handles all errors TODO: Modify all other error handlers to use this approach
+			response.update({'error': str(inst)})
 
 		finally:
 			return getResponse(params, response)
@@ -1456,8 +1492,9 @@ class createScenarioFromWizard():
 			createEmptyScenario(input_folder, output_folder, scenario_folder, data['description'])
 			logging.info("Empty scenario created")
 			
-			#write the MAPID into the input.dat file
-			updateParameters(scenario_folder + "input.dat", {'MAPID': 'blishten.' + data['planning_grid_name']})
+			#write the planning_grid_name into the input.dat file
+			logging.info("planning_grid_name will be " + data['planning_grid_name'])
+			updateParameters(scenario_folder + "input.dat", {'PLANNING_UNIT_NAME': data['planning_grid_name']})
 			
 			# create the pu.dat file
 			_createPUdatafile(scenario_folder, input_folder, data["planning_grid_name"])
