@@ -31,6 +31,7 @@ urls = (
   "/listScenarios", "listScenarios",
   "/getScenario","getScenario",
   "/createScenario", "createScenario",
+  "/cloneScenario", "cloneScenario",
   "/createScenarioFromWizard", "createScenarioFromWizard",
   "/deleteScenario", "deleteScenario",
   "/renameScenario", "renameScenario",
@@ -40,6 +41,8 @@ urls = (
   "/pollResults","pollResults",
   "/loadSolution", "loadSolution", 
   "/postFile","postFile",
+  "/postFileWithFolder","postFileWithFolder",
+  "/postSimpleFile","postSimpleFile",
   "/postShapefile","postShapefile",
   "/importShapefile","importShapefile",
   "/updateParameter","updateParameter",
@@ -50,7 +53,10 @@ urls = (
   "/getInterestFeaturesForScenario","getInterestFeaturesForScenario",
   "/deleteInterestFeature","deleteInterestFeature",
   "/createPUVSPRdatafile","createPUVSPRdatafile",
-  "/createSpecFile","createSpecFile"
+  "/createSpecFile","createSpecFile",
+  "/getPlanningUnits","getPlanningUnits",
+  "/updatePlanningUnits","updatePlanningUnits",
+  "/updatePlanningUnitStatuses","updatePlanningUnitStatuses"
   )
 
 def log(message, messageType=0):
@@ -127,6 +133,30 @@ def getKeys(s):
 	matches = re.findall('\\n[A-Z1-9_]{2,}', s, re.DOTALL)
 	return [m[1:] for m in matches]
   
+def updatePuValues(csvFile, ids, reset):
+    #get the data from the csv file
+    df = pandas.read_csv(csvFile)
+    #reset all the statuses to 0
+    df['status'] = 0
+    if (not reset):
+	    #create an index to be able to join the two data frames
+	    df = df.set_index('id')
+	    #create a dataframe with the data to be updated - this will be based on the new ids
+	    data = [[int(i),int(1),int(3)] for i in ids]  
+	    #make a dataframe from the update data
+	    df2 = pandas.DataFrame(numpy.array(data),columns=['id','cost','status'])
+	    #create an index to be able to join the two data frames
+	    df2 = df2.set_index('id')
+	    #update the data
+	    df.update(df2)
+	    #remove the index
+	    df = df.reset_index()
+    #set the datatypes
+    df = df.astype({'id':'int64','cost':'int64','status':'int64'})
+    #write to file
+    df.to_csv(csvFile, sep=',',index =False)
+    return None
+
 def getUserData(filename):
 	log("getUserData for " + filename)
 	returnDict = {}
@@ -170,6 +200,15 @@ def getInputParameters(filename):
 		elif k in ['DESCRIPTION','CREATEDATE','PLANNING_UNIT_NAME','OLDVERSION']: # metadata section of the input.dat file
 			key, value = getKeyValue(s, k)
 			metadataDict.update({key: value})
+			if k=='PLANNING_UNIT_NAME':
+				conn = psycopg2.connect("dbname='biopama' host='localhost' user='jrc' password='thargal88'")
+				df2 = pandas.read_sql_query("select * from marxan.get_planning_units_metadata('" + value + "')",con=conn)
+				if (df2.shape[0] == 0):
+					metadataDict.update({'pu_alias': value,'pu_description': 'No description','pu_domain': 'Unknown domain','pu_area': 'Unknown area','pu_creation_date': 'Unknown date'})
+				else:
+					#get the data from the metadata_planning_units table
+					metadataDict.update({'pu_alias': df2.iloc[0]['alias'],'pu_description': df2.iloc[0]['description'],'pu_domain': df2.iloc[0]['domain'],'pu_area': df2.iloc[0]['area'],'pu_creation_date': df2.iloc[0]['creation_date']})
+				conn.close()
 		elif k in ['CLASSIFICATION', 'NUMCLASSES','COLORCODE', 'TOPCLASSES','OPACITY']: # renderer section of the input.dat file
 			key, value = getKeyValue(s, k)
 			rendererDict.update({key: value})
@@ -297,6 +336,7 @@ def getScenarios(user):
 	#sort the folders
 	scenario_folders.sort()
 	scenarios = []
+	
 	#iterate through the scenario folders and get the parameters for each scenario to return
 	for dir in scenario_folders:
 		#get the name of the folder 
@@ -307,8 +347,9 @@ def getScenarios(user):
 			#get the description
 			desc = getInputParameter(dir + 'input.dat',"DESCRIPTION")
 			createDate = getInputParameter(dir + 'input.dat',"CREATEDATE")
+			oldVersion = getInputParameter(dir + 'input.dat',"OLDVERSION")
 			#create a dict to save the data
-			scenarios.append({'name':scenario,'description':desc,'createdate': createDate})
+			scenarios.append({'name':scenario,'description':desc,'createdate': createDate,'oldVersion':oldVersion})
 	return scenarios
 
 def createEmptyScenario(input_folder, output_folder,scenario_folder, description):
@@ -327,13 +368,16 @@ def checkScenarioExists(scenario_folder):
 		raise MarxanServicesError("Scenario '" + scenario_folder[scenario_folder[:-1].rindex("/") + 1:-1] + "' does not exist")     
 
 #reads in the text file and transforms the data so that each row has: <number of solutions>, <puid array>
-def getVectorTileOptimisedOutput(csvFile, columnName):
-	log("getVectorTileOptimisedOutput for csvFile '" + csvFile + "' and columnName '" + columnName + "'")
-	df= pandas.read_csv(csvFile).pivot(index=columnName,columns='planning_unit',values='planning_unit') #pivots the data
+def getVectorTileOptimisedOutput(csvFile, columnName, cols, vals, skipFirst):
+	df= pandas.read_csv(csvFile).pivot(index=columnName,columns=cols,values=vals) #pivots the data
 	transposed = df[df.columns].apply(lambda x: ','.join(x.dropna().astype(int).astype(str)),axis=1) #joins the multiple columns to produce a comma-separated string of PUIDs with the number
-	arr = [[i,[int(n) for n in j.split(",")]] for (i,j) in transposed.items()][1:] #convert to an array of arrays and skip the first item as this one is all of the planning units which do not occur in any solution and dont need to be mapped
+	if skipFirst:
+		arr = [[i,[int(n) for n in j.split(",")]] for (i,j) in transposed.items()][1:] #convert to an array of arrays and skip the first item as this one is all of the planning units which do not occur in any solution and dont need to be mapped
+	else:
+		arr = [[i,[int(n) for n in j.split(",")]] for (i,j) in transposed.items()]
+	
 	return json.loads(json.dumps(arr))
-
+	
 def CreateGrid(pu_folder, _type, area, xleft, ybottom, xright, ytop):
 	log("CreateGrid: " + pu_folder + " " + _type + " " + str(area) + " " + str(xleft) + " " + str(ybottom) + " " + str(xright) + " " + str(ytop))
 	#error checks
@@ -436,7 +480,7 @@ def CreateGrid(pu_folder, _type, area, xleft, ybottom, xright, ytop):
 
 #uploads a tileset to mapbox using the filename of the file (filename) to upload and the name of the resulting tileset (_name)
 def uploadTileset(filename, _name):
-	log("Uploading to MapBox: " + filename + " " + name)
+	log("Uploading to MapBox: " + filename + " " + _name)
 	#create an instance of the upload service
 	service = Uploader(access_token=MAPBOX_ACCESS_TOKEN)	
 	with open(filename, 'rb') as src:
@@ -471,6 +515,29 @@ def _createPUdatafile(scenario_folder, input_folder, planning_grid_name):
 	
 	#update the input.dat file
 	updateParameters(scenario_folder + "input.dat", {'PUNAME': 'pu.dat'})
+
+def _updatePUdatafile(input_folder, id_values, cost_values, status_values):
+	try:
+		log("_updatePUdatafile")
+		ids = id_values.split(",")
+		costs = cost_values.split(",") 
+		statuses = status_values.split(",") 
+
+		#open the file writer
+		file = open(input_folder  + "pu.dat","w") 
+		file.write('id,cost,status\n')
+		
+		#write the pu data to file
+		for i in range(len(ids)):
+			file.write(ids[i] + "," + costs[i] + "," + statuses[i] + "\n")
+		file.close()
+		log("pu.dat file updated")
+
+	except (MarxanServicesError) as e: 
+		response.update({'error': e.message})
+		
+	finally:
+		return ""	
 
 #creates the spec.dat file using the passed paramters - used in the web API and internally in the createScenarioFromWizard function
 def _createSPECdatafile(scenario_folder, input_folder, interest_features, target_values, spf_values):
@@ -512,9 +579,10 @@ def _getInterestFeaturesForScenario(scenario_folder,input_folder, web_call):
 			#connect to the db
 			conn = psycopg2.connect("dbname='biopama' host='localhost' user='jrc' password='thargal88'")
 			
-			#get the values from the marxan.metadata_interest_features table
-			df2 = pandas.read_sql_query('select oid,* from marxan.metadata_interest_features',con=conn)   
-			
+			#get the values from the marxan.metadata_interest_features table using the REST API
+			df2 = pandas.read_sql_query('select * from marxan.get_interest_features()',con=conn)   
+
+			log("_getInterestFeaturesForScenario: " + input_folder)
 			#join the dataframes using the id field as the key from the spec.dat file and the oid as the key from the metadata_interest_features table
 			output_df = df.set_index("id").join(df2.set_index("oid"))
 			
@@ -547,6 +615,9 @@ def _getInterestFeaturesForScenario(scenario_folder,input_folder, web_call):
 		raise 
 
 	return output_df #return a pandas dataframe	
+
+def _getPlanningUnitsForScenario(input_folder):
+	return getVectorTileOptimisedOutput(input_folder + "pu.dat","status","id","id", False)
 	
 #uploads a feature class with the passed feature class name to MapBox as a tileset using the MapBox Uploads API
 class uploadTilesetToMapBox():
@@ -588,6 +659,9 @@ class uploadTilesetToMapBox():
 			log("Deleting zip file: " + zipfilename)
 			deleteZippedShapefile(MARXAN_FOLDER, zipfilename, feature_class_name)
 			
+		except Exception as inst: #handles all errors TODO: Modify all other error handlers to use this approach
+			response.update({'error': str(inst)})
+
 		except (MarxanServicesError) as e: 
 			response.update({'error': e.message})
 
@@ -850,8 +924,11 @@ class getScenario():
 			df = pandas.read_sql_query("SELECT oid::integer as id, creation_date, feature_class_name, alias, description FROM marxan.metadata_interest_features;", con=conn)
 			allfeatures = json.loads(df.to_json(orient='records'))
 
+			#get the planning unit data
+			pu_data = _getPlanningUnitsForScenario(input_folder)
+			
 			#set the response
-			response.update({'scenario': params['SCENARIO'],'metadata': metadata, 'files': files, 'runParameters': runParams, 'renderer': renderer, 'features': features, 'allFeatures': allfeatures})
+			response.update({'scenario': params['SCENARIO'],'metadata': metadata, 'files': files, 'runParameters': runParams, 'renderer': renderer, 'features': features, 'allFeatures': allfeatures, 'planning_units': pu_data})
 			
 			#set the users last scenario so it will load on login
 			updateParameters(user_folder + "user.dat", {'LASTSCENARIO': params['SCENARIO']})
@@ -890,6 +967,36 @@ class createScenario():
 
 			#set the response
 			response.update({'info': "Scenario '" + params["SCENARIO"] + "' created", 'name': params["SCENARIO"], 'description': description})
+
+		except (MarxanServicesError) as e:
+			response.update({'error': e.message})
+
+		finally:
+			return getResponse(params, response)
+		
+#clones the scenario
+	#https://db-server-blishten.c9users.io/marxan/webAPI.py/cloneScenario?user=andrew&scenario=Tonga%20marine&callback=__jp2
+class cloneScenario():
+	def GET(self):
+		try:
+			log("cloneScenario",1)
+			#initialise the request objects
+			user_folder, scenario_folder, input_folder, output_folder, response, params = initialiseGetRequest(web.ctx.query[1:])
+			
+			#get the new scenario folder
+			new_scenario_folder = scenario_folder
+			#recursively check that the folder does not exist until we get a new folder that doesnt exist
+			while (os.path.exists(new_scenario_folder)):
+			    new_scenario_folder = new_scenario_folder[:-1] + "_copy/"
+			
+			#copy the scenario
+			shutil.copytree(scenario_folder, new_scenario_folder)
+			
+			#update the description and create date
+			updateParameters(new_scenario_folder + "input.dat", {'DESCRIPTION': "Copy of " + params['SCENARIO'] ,  'CREATEDATE': datetime.datetime.now().strftime("%a, %d %b %Y %H:%M:%S")})
+			
+			#set the response
+			response.update({'info': "Scenario '" + new_scenario_folder[:-1].split("/")[-1] + "' created", 'name': new_scenario_folder[:-1].split("/")[-1]})
 
 		except (MarxanServicesError) as e:
 			response.update({'error': e.message})
@@ -1058,7 +1165,7 @@ class pollResults:
 				sum = pandas.read_csv(output_folder + "output_sum.txt").to_json(orient='values') 
 				
 				#get the summed solution as a json string
-				ssoln = getVectorTileOptimisedOutput(output_folder + "output_ssoln.txt", "number")
+				ssoln = getVectorTileOptimisedOutput(output_folder + "output_ssoln.txt", "number", "planning_unit", "planning_unit", True)
 
 				#get the info message to return
 				if params["CHECKFOREXISTINGRUN"] == "true":
@@ -1096,8 +1203,8 @@ class loadSolution:
 			#get the content from the solution - this will be 'output_r00001.txt'
 			solutionFile = output_folder + "output_r" + "%05d" % (int(params["SOLUTION"]),)  + ".txt"
 			try:
-				solution = getVectorTileOptimisedOutput(solutionFile, "solution")
-				
+				solution = getVectorTileOptimisedOutput(solutionFile, "solution","planning_unit", "planning_unit", True)
+
 			except (IOError):
 				raise MarxanServicesError("Solution not found")
 				
@@ -1140,6 +1247,44 @@ class postFile:
 		finally:
 			return getResponse({}, response)
 
+#saves an uploaded file to the input folder 
+class postFileWithFolder:
+	def POST(self):
+		try:
+			log("postSimpleFile",1)
+			#there will be 2 variables in the data: 
+			# user			= the user who is uploading the file
+			# scenario		= the name of the scenario
+			# filename      = the filename of the uploaded file including a folder path
+			# value         = the content of the file
+			data = web.input()
+			response = {}
+
+			log("Input filename: " + data['filename'])
+			
+			#get the appropriate folders
+			user_folder, scenario_folder, input_folder, output_folder = initialisePostRequest(data)
+			
+			#get the path to the file
+			destFile = scenario_folder + data['filename']
+			
+			log("Output filename: " + destFile)
+			
+			#write the data						
+			writeFile(destFile, data['value'])
+
+			#write the response
+			response = {'info': "File '" + data.filename + "' uploaded", 'file': data.filename}
+			
+		except (MarxanServicesError) as e:
+			response = {'error': e.message}
+
+		except Exception as inst: #handles all errors TODO: Modify all other error handlers to use this approach
+			response.update({'error': str(inst)})
+
+		finally:
+			return getResponse({}, response)
+
 #uploads a shapefile to the input folder for the user
 class postShapefile:
 	def POST(self):
@@ -1151,6 +1296,7 @@ class postShapefile:
 			# description   = a simple metadata description
 			# name          = the text to display in UIs
 			data = web.input()
+			response = {}
 
 			#write the file to the marxan folder
 			writeFile(MARXAN_FOLDER + data.filename, data.value)
@@ -1165,7 +1311,8 @@ class postShapefile:
 			return getResponse({}, response)
 
 #imports a shapefile that already exists on the server into postgis and optionally dissolves it (if it is an interest feature)
-	#https://db-server-blishten.c9users.io/marxan/webAPI.py/importShapefile?filename=png_provinces.zip&name=png_provinces&description=wibble&dissolve=true&callback=__jp2
+	#https://db-server-blishten.c9users.io/marxan/webAPI.py/importShapefile?filename=png_provinces.zip&name=png_provinces&description=wibble&dissolve=true&type=interest_feature&callback=__jp2
+	#https://db-server-blishten.c9users.io/marxan/webAPI.py/importShapefile?filename=pu_sample.zip&name=pu_test&description=wibble&dissolve=false&type=planning_unit&callback=__jp2
 class importShapefile:
 	def GET(self):
 		try:
@@ -1183,6 +1330,8 @@ class importShapefile:
 				raise MarxanServicesError("No description value")                                   
 			if "DISSOLVE" not in params.keys():
 				raise MarxanServicesError("No dissolve value")
+			if "TYPE" not in params.keys(): #either planning_unit or interest_feature - this parameter determines which metadata table is updated
+				raise MarxanServicesError("No type value")
 			
 			#unzip the shapefile
 			filename = params['FILENAME']
@@ -1221,9 +1370,8 @@ class importShapefile:
 			if len(files)>0:
 				[os.remove(f) for f in files]       
 			
-			#insert a record in the metadata_interest_features table
+			# dissolve if necessary and populate the metadata table
 			try:
-				log("insert a record in the metadata_interest_features table")
 				#connect to the db
 				conn = psycopg2.connect("dbname='biopama' host='localhost' user='jrc' password='thargal88'")
 				cur = conn.cursor()
@@ -1239,8 +1387,13 @@ class importShapefile:
 					cur.execute("DROP TABLE IF EXISTS marxan.undissolved;")	
 
 				#populate the metadata information for the planning units feature class
-				cur.execute("INSERT INTO marxan.metadata_interest_features(feature_class_name,alias,description,creation_date) values ('" + rootfilename + "','" + params['NAME'] + "','" + params['DESCRIPTION'] + "',now());")
-				
+				if (params['TYPE'] == 'interest_feature'):
+					log("insert a record in the metadata_interest_features table")
+					cur.execute("INSERT INTO marxan.metadata_interest_features(feature_class_name,alias,description,creation_date) values ('" + rootfilename + "','" + params['NAME'] + "','" + params['DESCRIPTION'] + "',now());")
+				else:
+					log("insert a record in the metadata_planning_units table")
+					cur.execute("INSERT INTO marxan.metadata_planning_units(feature_class_name,alias,description,creation_date) values ('" + rootfilename + "','" + params['NAME'] + "','" + params['DESCRIPTION'] + "',now());")
+
 			except (psycopg2.InternalError, psycopg2.IntegrityError, psycopg2.ProgrammingError) as e: #postgis error
 				raise MarxanServicesError("Error importing shapefile: " + e.message)
 				
@@ -1250,7 +1403,7 @@ class importShapefile:
 				conn.close()
 			
 			#write the response
-			response = {'info': "File '" + shapefile + "' imported"}
+			response = {'info': "File '" + shapefile + "' imported", 'file': shapefile}
 			
 		except (MarxanServicesError) as e:
 			response = {'error': e.message}
@@ -1486,6 +1639,80 @@ class createPUdatafile:
 		finally:
 			return getResponse(params, response)
 
+	#https://db-server-blishten.c9users.io/marxan/webAPI.py/getPlanningUnits?user=andrew&scenario=Tonga%20marine
+class getPlanningUnits:
+	def GET(self):
+		try:
+			log("getPlanningUnits",1)			
+			#initialise the request objects
+			user_folder, scenario_folder, input_folder, output_folder, response, params = initialiseGetRequest(web.ctx.query[1:])
+			
+			#get the pu.dat file
+			pu_data = _getPlanningUnitsForScenario(input_folder)
+			
+			#set the response
+			response.update({'info': pu_data})
+			
+		except (MarxanServicesError) as e:
+			response.update({'error': e.message})
+
+		finally:
+			return getResponse(params, response)
+
+# updates the data in the pu.dat file with new data in 3 arrays: ids, costs, statuses - UNTESTED!!
+class updatePlanningUnits:
+	def POST(self):
+		try:
+			log("updatePlanningUnits",1)			
+
+			#get the various folders
+			user_folder, scenario_folder, input_folder, output_folder = initialisePostRequest(data)
+						
+			# update the pu.dat file
+			_updatePUdatafile(input_folder, data["ids"], data["costs"], data['statuses'])
+			
+			#set the response
+			response.update({'info': "pu.dat file updated"})
+			
+		except (MarxanServicesError) as e:
+			response.update({'error': e.message})
+
+		finally:
+			return getResponse(params, response)
+
+# updates the data in the pu.dat file by setting all of the items in the puidsToExclude list to have a status of 1
+class updatePlanningUnitStatuses:
+	def POST(self):
+		try:
+			log("updatePlanningUnitStatuses",1)	
+			data = web.input()
+			response={}
+			
+			#get the various folders
+			user_folder, scenario_folder, input_folder, output_folder = initialisePostRequest(data)
+						
+			# update the pu.dat file
+			puids = data["puidsToExclude"].strip()
+			log(puids)
+			if (len(puids)>0):
+				puids_array = puids.split(",")
+				updatePuValues(input_folder + "pu.dat", puids_array, False)
+			else:
+				updatePuValues(input_folder + "pu.dat", None, True)
+			
+			#set the response
+			response.update({'info': "pu.dat file updated"})
+			
+		except (MarxanServicesError) as e:
+			response.update({'error': e.message})
+
+		except Exception as inst: #handles all errors TODO: Modify all other error handlers to use this approach
+			response.update({'error': str(inst)})
+
+		finally:
+			return getResponse({}, response)
+
+			
 #creates the marxan planning unit versus species file in the folder for the given user and scenario using the planning_grid_name which corresponds to a feature class in the postgis database and the array of interest feature ids which are in the spec.dat file
 	#https://db-server-blishten.c9users.io/marxan/webAPI.py/createPUVSPRdatafile?user=asd&scenario=test&planning_grid_name=pu_asm_terrestrial_hexagons_10
 class createPUVSPRdatafile:
