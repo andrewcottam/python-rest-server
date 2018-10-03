@@ -52,7 +52,7 @@ urls = (
   "/createPUdatafile","createPUdatafile",
   "/getInterestFeaturesForScenario","getInterestFeaturesForScenario",
   "/deleteInterestFeature","deleteInterestFeature",
-  "/createPUVSPRdatafile","createPUVSPRdatafile",
+  "/createPuVSprFile","createPuVSprFile",
   "/createSpecFile","createSpecFile",
   "/getPlanningUnits","getPlanningUnits",
   "/updatePlanningUnits","updatePlanningUnits",
@@ -565,6 +565,8 @@ def _createSPECdatafile(scenario_folder, input_folder, interest_features, target
 		#update the input.dat file
 		updateParameters(scenario_folder + "input.dat", {'SPECNAME': 'spec.dat'})
 
+#returns the following
+#[{"description": "Groovy", "feature_class_name": "seagrasses_pacific", "creation_date": "2018-08-29 12:30:09.836061", "alias": "Pacific Seagrasses", "targetValue": 70, "id": 63407942, "spf": 40}, {"description": "Groovy", "feature_class_name": "png2", "creation_date": "2018-08-29 12:30:09.836061", "alias": "Pacific Coral Reefs", "targetValue": 80, "id": 63408006, "spf": 40}]
 def _getInterestFeaturesForScenario(scenario_folder,input_folder, web_call):
 	#set web_call to True if the results will be transformed for a webclient, e.g. in spec.dat the targetValue is called 'prop'
 	try:
@@ -586,8 +588,19 @@ def _getInterestFeaturesForScenario(scenario_folder,input_folder, web_call):
 			#join the dataframes using the id field as the key from the spec.dat file and the oid as the key from the metadata_interest_features table
 			output_df = df.set_index("id").join(df2.set_index("oid"))
 			
+			#get the name of the puvspr file from the input.dat file
+			puvsprname = getInputParameter(scenario_folder + 'input.dat',"PUVSPRNAME")
+			#read the data from the puvspr.dat file
+			df2 = pandas.read_csv(input_folder + puvsprname,sep='\t')
+			#get the unique species ids
+			processed_ids = df2.species.unique()
+			#set the default value for preprocessed as False
+			output_df['preprocessed'] = False
+			#set the preprocessed value to True where the id is in the puvspr file
+			output_df.loc[output_df.index.isin(processed_ids),['preprocessed']] = True
+			
 			#add the index as a column
-			output_df['oid']=output_df.index
+			output_df['oid'] = output_df.index
 	
 			#if the scenario is imported from the desktop version of Marxan then add default values for those properties that dont exist, e.g. description, feature_class_name, creation_date, alias
 			if (pandas.isnull(output_df.iloc[0]['feature_class_name'])): #test for a feature_class_name value which wont exist if it is a marxan desktop database
@@ -904,7 +917,7 @@ class listScenarios():
 			return getResponse(params, response)
 		  
 #loads all of the data for the scenario and returns the files and the run parameters as separate arrays
-	#https://db-server-blishten.c9users.io/marxan/webAPI2.py/getScenario?user=andrew&scenario=Sample%20scenario&callback=__jp2
+	#https://db-server-blishten.c9users.io/marxan/webAPI.py/getScenario?user=andrew&scenario=Sample%20scenario&callback=__jp2
 class getScenario():
 	def GET(self):
 		try:
@@ -1714,11 +1727,11 @@ class updatePlanningUnitStatuses:
 
 			
 #creates the marxan planning unit versus species file in the folder for the given user and scenario using the planning_grid_name which corresponds to a feature class in the postgis database and the array of interest feature ids which are in the spec.dat file
-	#https://db-server-blishten.c9users.io/marxan/webAPI.py/createPUVSPRdatafile?user=asd&scenario=test&planning_grid_name=pu_asm_terrestrial_hexagons_10
-class createPUVSPRdatafile:
+	#https://db-server-blishten.c9users.io/marxan/webAPI.py/createPuVSprFile?user=asd&scenario=test&planning_grid_name=pu_asm_terrestrial_hexagons_10
+class createPuVSprFile:
 	def GET(self):
 		try:
-			log("createPUVSPRdatafile",1)			
+			log("createPuVSprFile",1)			
 			#initialise the request objects
 			user_folder, scenario_folder, input_folder, output_folder, response, params = initialiseGetRequest(web.ctx.query[1:])
 			if "PLANNING_GRID_NAME" not in params.keys():
