@@ -49,11 +49,11 @@ urls = (
   "/createPlanningUnitsGrid","createPlanningUnitsGrid", #python implementation
   "/createPlanningUnits","createPlanningUnits", #postgis implementation
   "/uploadTilesetToMapBox","uploadTilesetToMapBox",
-  "/createPUdatafile","createPUdatafile",
   "/getInterestFeaturesForScenario","getInterestFeaturesForScenario",
   "/deleteInterestFeature","deleteInterestFeature",
-  "/createPuVSprFile","createPuVSprFile",
-  "/createSpecFile","createSpecFile",
+  "/createPUdatafile","createPUdatafile",
+  "/updateSpecFile","updateSpecFile",
+  "/preprocessFeature","preprocessFeature",
   "/getPlanningUnits","getPlanningUnits",
   "/updatePlanningUnits","updatePlanningUnits",
   "/updatePlanningUnitStatuses","updatePlanningUnitStatuses"
@@ -87,6 +87,10 @@ def readFile(filename):
 	f.close()
 	return s
 
+#there are some characters in the log file which cause the json parser to fail - this functions removes them
+def cleanLog(log):
+	return log.replace("\x90","")
+	
 def createZipfile(lstFileNames, folder, zipfilename):
 	with zipfile.ZipFile(folder + zipfilename, 'w') as myzip:
 	    for f in lstFileNames:   
@@ -251,6 +255,25 @@ def deleteAllFiles(folder):
 	for f in files:
 		os.remove(f)
 
+#writes the dataframe to the dat file - appending it if it already exists
+def _writeToDatFile(file, dataframe):
+	#see if the file exists
+	if (os.path.exists(file)):
+		
+		#read the current data
+		df = pandas.read_csv(file)
+		
+	else:
+		
+		#create the new dataframe
+		df = pandas.DataFrame()
+
+	#append the new records
+	df = df.append(dataframe)
+		
+	#write the file
+	df.to_csv(file, index =False)
+
 #initialises the rest request and response from a GET request
 # 1. initialises a response dict which is used to populate the response information
 # 2. gets the request parameters as a dictionary which are passed as query parameters
@@ -273,7 +296,6 @@ def initialiseGetRequest(queryString):
 
 #initialises the folders from a POST request
 def initialisePostRequest(data):
-	log("initialisePostRequest")
 	try:
 		#check the user parameter
 		if not ("user" in data.keys()):
@@ -287,10 +309,6 @@ def initialisePostRequest(data):
 
 		#get the user, scenario, input and output folders
 		user_folder, scenario_folder, input_folder, output_folder = getFolders(data.user, scenario)
-		log("user_folder: " + user_folder)
-		log("scenario_folder: " + scenario_folder)
-		log("input_folder: " + input_folder)
-		log("output_folder: " + output_folder)
 		
 	except (MarxanServicesError) as e:
 		raise
@@ -306,16 +324,21 @@ def getFolders(user, scenario):
 	
 #creates the response payload by converting the dict to json, setting the response type and if necessary wrapping the response in a jsonp function to support asynchronous calls
 def getResponse(params, response):
-	#set the content type of the response
-	web.header('Content-Type','application/json') 
-	#convert the dict to json
-	responseJson = json.dumps(response)
-	log("RESPONSE: " + responseJson[:100], 2)
-	#get the callback parameter for jsonp calls
-	if "CALLBACK" in params.keys():
-		return params["CALLBACK"] + "(" + responseJson + ")"
-	else:
-		return responseJson
+	try:
+		#set the content type of the response
+		web.header('Content-Type','application/json') 
+		#convert the dict to json
+		responseJson = json.dumps(response)
+		log("RESPONSE: " + responseJson[:100], 2)
+		#get the callback parameter for jsonp calls
+		if "CALLBACK" in params.keys():
+			return params["CALLBACK"] + "(" + responseJson + ")"
+		else:
+			return responseJson
+			
+	except (UnicodeDecodeError) as e:
+		return {'error': e}
+		
 	
 def getUsers():
 	log("getUsers")
@@ -509,7 +532,7 @@ def _createPUdatafile(scenario_folder, input_folder, planning_grid_name):
 		raise MarxanServicesError("Error creating pu.dat file: " + e.message)
 		
 	finally:
-		cur.close()
+		cur.close() 
 		conn.commit()
 		conn.close()
 	
@@ -540,21 +563,64 @@ def _updatePUdatafile(input_folder, id_values, cost_values, status_values):
 		return ""	
 
 #creates the spec.dat file using the passed paramters - used in the web API and internally in the createScenarioFromWizard function
-def _createSPECdatafile(scenario_folder, input_folder, interest_features, target_values, spf_values):
-	#create the spec.dat file
+def _updateSPECdatafile(scenario_folder, input_folder, interest_features, target_values, spf_values):
+	#update the spec.dat file
 	try:
-		log("Creating spec.dat file in folder '" + input_folder + "' using interest features")
 		ids = interest_features.split(",")
+		log("Updating spec.dat file using interest features " + ",".join([str(i) for i in ids]))
+		ids = [int(id) for id in ids]
 		props = target_values.split(",") 
 		spfs = spf_values.split(",") 
 
+		#get the data from the spec.dat file
+		df = getSpecDatData(input_folder, scenario_folder)
+		
+		#get all the species that are no longer in the scenario
+		df = getSpecDatData(input_folder, scenario_folder)
+		oldsIds = df.id.unique().tolist() 
+		removedIds = list(set(oldsIds) - set(ids))
+
+		log("Removing features " + ",".join([str(i) for i in removedIds]))
+
+		#update the puvspr.dat file to remove any species that are no longer in the scenario
+		if len(removedIds) > 0:
+			
+			#get the name of the puvspr file from the input.dat file
+			puvsprname = getInputParameter(scenario_folder + 'input.dat',"PUVSPRNAME")
+			if (puvsprname) and (os.path.exists(input_folder + puvsprname)):
+
+				#if the file exists then get the existing data
+				df2 = pandas.read_csv(input_folder + puvsprname)
+
+				#remove the species records for those species that are no longer in the scenario
+				df2 = df2[~df2.species.isin(removedIds)]
+
+				#write the results to the puvspr.dat file
+				df2.to_csv(input_folder + puvsprname, index =False)
+	
+			#update the preprocessing.dat file to remove any species that are no longer in the scenario - these will need to be preprocessed again
+			if (os.path.exists(input_folder + "preprocessing.dat")):
+				
+				#if the file exists then get the existing data
+				df2 = pandas.read_csv(input_folder + "preprocessing.dat")
+				
+				#remove the feature records for those features that are no longer in the scenario
+				df2 = df2[~df2.id.isin(removedIds)]
+
+				#write the results to the puvspr.dat file
+				log("writing the preprocessing file")
+				log(df2)
+				df2.to_csv(input_folder + "preprocessing.dat", index =False)
+		
 		#open the file writer
 		file = open(input_folder  + "spec.dat","w") 
 		file.write('id,prop,spf\n')
 		
 		#write the spec data to file
 		for i in range(len(ids)):
-			file.write(ids[i] + "," + str(float(props[i])/100) + "," + spfs[i] + "\n")
+			if i not in removedIds:
+				file.write(str(ids[i]) + "," + str(float(props[i])/100) + "," + spfs[i] + "\n")
+				
 		file.close()
 		log("spec.dat file created")
 			
@@ -565,43 +631,61 @@ def _createSPECdatafile(scenario_folder, input_folder, interest_features, target
 		#update the input.dat file
 		updateParameters(scenario_folder + "input.dat", {'SPECNAME': 'spec.dat'})
 
+def getSpecDatData(input_folder, scenario_folder):
+
+	#get the name of the spec.dat file
+	specname = getInputParameter(scenario_folder + 'input.dat',"SPECNAME")
+
+	#get the values from the spec.dat file
+	df = pandas.read_csv(input_folder + specname)
+	
+	#test the spec.dat file is not empty
+	if (df.empty):
+		raise MarxanServicesError("There are no conservation features")
+
+	return df
+
 #returns the following
-#[{"description": "Groovy", "feature_class_name": "seagrasses_pacific", "creation_date": "2018-08-29 12:30:09.836061", "alias": "Pacific Seagrasses", "targetValue": 70, "id": 63407942, "spf": 40}, {"description": "Groovy", "feature_class_name": "png2", "creation_date": "2018-08-29 12:30:09.836061", "alias": "Pacific Coral Reefs", "targetValue": 80, "id": 63408006, "spf": 40}]
+#[{"description": "Groovy", "feature_class_name": "seagrasses_pacific", "creation_date": "2018-08-29 12:30:09.836061", "alias": "Pacific Seagrasses", "target_value": 70, "id": 63407942, "spf": 40}, {"description": "Groovy", "feature_class_name": "png2", "creation_date": "2018-08-29 12:30:09.836061", "alias": "Pacific Coral Reefs", "target_value": 80, "id": 63408006, "spf": 40}]
 def _getInterestFeaturesForScenario(scenario_folder,input_folder, web_call):
-	#set web_call to True if the results will be transformed for a webclient, e.g. in spec.dat the targetValue is called 'prop'
+	#set web_call to True if the results will be transformed for a webclient, e.g. in spec.dat the target_value is called 'prop'
 	try:
 		log("_getInterestFeaturesForScenario: " + input_folder)
-		#get the location of the spec.dat file for the scenario
-		specname = getInputParameter(scenario_folder + 'input.dat',"SPECNAME")
-			
-		#get the values from the spec.dat file  for the scenario
-		df = pandas.read_csv(input_folder + specname)
+		
+		#get the data from the spec.dat file
+		df = getSpecDatData(input_folder, scenario_folder)
 		
 		try:
 			#connect to the db
 			conn = psycopg2.connect("dbname='biopama' host='localhost' user='jrc' password='thargal88'")
 			
-			#get the values from the marxan.metadata_interest_features table using the REST API
+			#get the values from the marxan.metadata_interest_features table using the get_interest_features function
 			df2 = pandas.read_sql_query('select * from marxan.get_interest_features()',con=conn)   
 
-			log("_getInterestFeaturesForScenario: " + input_folder)
 			#join the dataframes using the id field as the key from the spec.dat file and the oid as the key from the metadata_interest_features table
 			output_df = df.set_index("id").join(df2.set_index("oid"))
+
+			# #get the name of the puvspr file from the input.dat file
+			# puvsprname = getInputParameter(scenario_folder + 'input.dat',"PUVSPRNAME")
+
+			# #if it is a new scenario there may not be an entry in the input.dat file for PUVSPRNAME or the file may not exist
+			# if (puvsprname) and (os.path.exists(input_folder + puvsprname)):
+				
+			# 		#if the file exists then get the species that have already been processed
+			# 		df2 = pandas.read_csv(input_folder + puvsprname)
+			# 		#get the unique species ids 
+			# 		processed_ids = df2.species.unique()
+			# else:
+			# 	processed_ids = []			
 			
-			#get the name of the puvspr file from the input.dat file
-			puvsprname = getInputParameter(scenario_folder + 'input.dat',"PUVSPRNAME")
-			#read the data from the puvspr.dat file
-			df2 = pandas.read_csv(input_folder + puvsprname,sep='\t')
-			#get the unique species ids
-			processed_ids = df2.species.unique()
-			#set the default value for preprocessed as False
-			output_df['preprocessed'] = False
-			#set the preprocessed value to True where the id is in the puvspr file
-			output_df.loc[output_df.index.isin(processed_ids),['preprocessed']] = True
+			# #set the default value for preprocessed as False
+			# output_df['preprocessed'] = False
+			
+			# #set the preprocessed value to True where the id is in the puvspr file
+			# output_df.loc[output_df.index.isin(processed_ids),['preprocessed']] = True
 			
 			#add the index as a column
 			output_df['oid'] = output_df.index
-	
 			#if the scenario is imported from the desktop version of Marxan then add default values for those properties that dont exist, e.g. description, feature_class_name, creation_date, alias
 			if (pandas.isnull(output_df.iloc[0]['feature_class_name'])): #test for a feature_class_name value which wont exist if it is a marxan desktop database
 				log("Scenario is imported from Marxan Desktop - adding default values")
@@ -612,12 +696,12 @@ def _getInterestFeaturesForScenario(scenario_folder,input_folder, web_call):
 				output_df = output_df[["description", "feature_class_name", "creation_date", "alias", "prop", "spf", "oid"]]
 			
 			if (web_call):
-			    #rename the columns that are sent back to the client as the names of various properties are different in Marxan compared to the web client
-			    output_df = output_df.rename(index=str, columns={'prop': 'targetValue', 'oid':'id'})    
+				#rename the columns that are sent back to the client as the names of various properties are different in Marxan compared to the web client
+				output_df = output_df.rename(index=str, columns={'prop': 'target_value', 'oid':'id'})    
 			
-			    #get the target as an integer - Marxan has it as a percentage, i.e. convert 0.17 -> 17
-			    output_df['targetValue'] = (output_df['targetValue'] * 100).astype(int)
-		    
+				#get the target as an integer - Marxan has it as a percentage, i.e. convert 0.17 -> 17
+				output_df['target_value'] = (output_df['target_value'] * 100).astype(int)
+		
 		except (psycopg2.InternalError, psycopg2.IntegrityError) as e: #postgis error
 			raise MarxanServicesError("Error getting interest features for scenario: " + e.message)
 		
@@ -922,6 +1006,9 @@ class getScenario():
 	def GET(self):
 		try:
 			log("getScenario",1)
+			#get a connection to the database
+			conn = psycopg2.connect("dbname='biopama' host='localhost' user='jrc' password='thargal88'")
+			
 			#initialise the request objects
 			user_folder, scenario_folder, input_folder, output_folder, response, params = initialiseGetRequest(web.ctx.query[1:])
 			checkScenarioExists(scenario_folder)                
@@ -933,15 +1020,20 @@ class getScenario():
 			features = json.loads(_getInterestFeaturesForScenario(scenario_folder,input_folder, True).to_json(orient='records'))
 			
 			#get all the interest features - these will be returned even for marxan desktop databases which have no records in the metadata_interest_features table
-			conn = psycopg2.connect("dbname='biopama' host='localhost' user='jrc' password='thargal88'")
-			df = pandas.read_sql_query("SELECT oid::integer as id, creation_date, feature_class_name, alias, description FROM marxan.metadata_interest_features;", con=conn)
+			df = pandas.read_sql_query("SELECT oid::integer as id, creation_date, feature_class_name, alias, _area area, description FROM marxan.metadata_interest_features order by alias;", con=conn)
 			allfeatures = json.loads(df.to_json(orient='records'))
 
 			#get the planning unit data
 			pu_data = _getPlanningUnitsForScenario(input_folder)
 			
+			#get the preprocessing state
+			if (os.path.exists(input_folder + "preprocessing.dat")):
+				preprocessing = json.loads(pandas.read_csv(input_folder + "preprocessing.dat").to_json(orient='values')) 
+			else:
+				preprocessing = []
+			
 			#set the response
-			response.update({'scenario': params['SCENARIO'],'metadata': metadata, 'files': files, 'runParameters': runParams, 'renderer': renderer, 'features': features, 'allFeatures': allfeatures, 'planning_units': pu_data})
+			response.update({'scenario': params['SCENARIO'],'metadata': metadata, 'files': files, 'runParameters': runParams, 'renderer': renderer, 'features': features, 'allFeatures': allfeatures, 'planning_units': pu_data, 'preprocessing': preprocessing})
 			
 			#set the users last scenario so it will load on login
 			updateParameters(user_folder + "user.dat", {'LASTSCENARIO': params['SCENARIO']})
@@ -949,7 +1041,7 @@ class getScenario():
 		except (MarxanServicesError) as e:
 			response.update({'error': e.message})
 
-		except Exception as inst: 
+		except Exception as e: 
 			response.update({'error': str(inst)})
 
 		finally:
@@ -1169,15 +1261,21 @@ class pollResults:
 			if runsCompleted == int(params['NUMREPS']):
 				
 				#log
-				log("Marxan request finished")
+				log("Marxan request finished - compiling results")
 				
 				#read the log from the log file
 				logresults = readFile(output_folder + "output_log.dat")
 				
-				#read the data from the text file
-				sum = pandas.read_csv(output_folder + "output_sum.txt").to_json(orient='values') 
+				#clean the log file
+				logresults = cleanLog(logresults)
 				
-				#get the summed solution as a json string
+				#read the data from the output_mvbest.txt file
+				mvbest = json.loads(pandas.read_csv(output_folder + "output_mvbest.txt").to_json(orient='values')) 
+
+				#read the data from the output_sum.txt file
+				sum = json.loads(pandas.read_csv(output_folder + "output_sum.txt").to_json(orient='values')) 
+				
+				#read the data from the output_ssoln.txt file
 				ssoln = getVectorTileOptimisedOutput(output_folder + "output_ssoln.txt", "number", "planning_unit", "planning_unit", True)
 
 				#get the info message to return
@@ -1187,7 +1285,7 @@ class pollResults:
 					info = "Run succeeded"
 				
 				#add the other items to the response
-				response.update({'info':info, 'log': logresults, 'sum':json.loads(sum),'ssoln': ssoln})
+				response.update({'info':info, 'log': logresults, 'mvbest': mvbest, 'sum':sum, 'ssoln': ssoln})
 		
 			else:
 				#return the number of runs completed
@@ -1197,7 +1295,7 @@ class pollResults:
 			response.update({'error': e.message})
 
 		except:
-			"Unexpected error:", sys.exc_info()[0]
+			raise "Unexpected error:", sys.exc_info()[0]
 			
 		finally:
 			return getResponse(params, response)        
@@ -1358,36 +1456,41 @@ class importShapefile:
 			zip_ref.extractall(MARXAN_FOLDER)
 			zip_ref.close()
 			
-			#import the shapefile
-			shapefile = rootfilename + '.shp'
-			log("Importing the " + shapefile + " shapefile into PostGIS")
-			#the ogc_fid field that is produced is an autonumbering oid
-			if params['DISSOLVE']=='true':
-				#if we want to dissolve the shapefile, then produce a tmp feature class called undissolved in the marxan schema in the global equal area projection 3410
-				cmd = '/home/ubuntu/anaconda2/bin/ogr2ogr -f "PostgreSQL" PG:"host=localhost user=jrc dbname=biopama password=thargal88" /home/ubuntu/workspace/marxan/Marxan243/MarxanData_unix/' + shapefile + ' -nlt GEOMETRY -lco SCHEMA=marxan -nln undissolved -t_srs EPSG:3410'
-				log("Imported into marxan.undissolved")
-			else:
-				cmd = '/home/ubuntu/anaconda2/bin/ogr2ogr -f "PostgreSQL" PG:"host=localhost user=jrc dbname=biopama password=thargal88" /home/ubuntu/workspace/marxan/Marxan243/MarxanData_unix/' + shapefile + ' -nlt GEOMETRY -lco SCHEMA=marxan'
-				log("Imported into marxan." + rootfilename)
-				
-			#run the import
-			status, output = commands.getstatusoutput(cmd) 
-			#check for errors
-			if (output != ''):
-				raise MarxanServicesError("Error importing shapefile: " + output)
-			
-			#delete the zip file and the shapefile
-			log("Deleting the zipfile")
-			os.remove(MARXAN_FOLDER + filename)	
-			files = glob.glob(MARXAN_FOLDER + rootfilename + '.*')
-			if len(files)>0:
-				[os.remove(f) for f in files]       
-			
-			# dissolve if necessary and populate the metadata table
+			# connect to postgis
 			try:
 				#connect to the db
 				conn = psycopg2.connect("dbname='biopama' host='localhost' user='jrc' password='thargal88'")
 				cur = conn.cursor()
+				
+				#import the shapefile
+				shapefile = rootfilename + '.shp'
+				log("Importing the " + shapefile + " shapefile into PostGIS")
+				
+				#drop the undissolved feature class if it already exists
+				cur.execute("DROP TABLE IF EXISTS marxan.undissolved;")	
+				
+				#the ogc_fid field that is produced is an autonumbering oid
+				if params['DISSOLVE']=='true':
+					#if we want to dissolve the shapefile, then produce a tmp feature class called undissolved in the marxan schema in the global equal area projection 3410
+					cmd = '/home/ubuntu/anaconda2/bin/ogr2ogr -f "PostgreSQL" PG:"host=localhost user=jrc dbname=biopama password=thargal88" /home/ubuntu/workspace/marxan/Marxan243/MarxanData_unix/' + shapefile + ' -nlt GEOMETRY -lco SCHEMA=marxan -nln undissolved -t_srs EPSG:3410'
+				else:
+					cmd = '/home/ubuntu/anaconda2/bin/ogr2ogr -f "PostgreSQL" PG:"host=localhost user=jrc dbname=biopama password=thargal88" /home/ubuntu/workspace/marxan/Marxan243/MarxanData_unix/' + shapefile + ' -nlt GEOMETRY -lco SCHEMA=marxan'
+					
+				#run the import
+				log("Running command: " + cmd)
+				status, output = commands.getstatusoutput(cmd) 
+				
+				#check for errors
+				if (output != ''):
+					raise MarxanServicesError("Error importing shapefile: " + output)
+				
+				#delete the zip file and the shapefile
+				log("Deleting the zipfile")
+				os.remove(MARXAN_FOLDER + filename)	
+				files = glob.glob(MARXAN_FOLDER + rootfilename + '.*')
+				if len(files)>0:
+					[os.remove(f) for f in files]       
+			
 	
 				#if we want to dissolve the shapefile then do so now by querying the temporary feature class and outputting a new table with a single column called geometry in EPSG:3410
 				if params['DISSOLVE']=='true':
@@ -1402,7 +1505,8 @@ class importShapefile:
 				#populate the metadata information for the planning units feature class
 				if (params['TYPE'] == 'interest_feature'):
 					log("insert a record in the metadata_interest_features table")
-					cur.execute("INSERT INTO marxan.metadata_interest_features(feature_class_name,alias,description,creation_date) values ('" + rootfilename + "','" + params['NAME'] + "','" + params['DESCRIPTION'] + "',now());")
+					# cur.execute("INSERT INTO marxan.metadata_interest_features(feature_class_name,alias,description,creation_date) values ('" + rootfilename + "','" + params['NAME'] + "','" + params['DESCRIPTION'] + "',now());")
+					cur.execute("INSERT INTO marxan.metadata_interest_features SELECT '" + rootfilename + "','" + params['NAME'] + "','" + params['DESCRIPTION'] + "',now(), sub._area FROM (SELECT ST_Area(geometry) _area FROM marxan." + rootfilename + ") AS sub;")
 				else:
 					log("insert a record in the metadata_planning_units table")
 					cur.execute("INSERT INTO marxan.metadata_planning_units(feature_class_name,alias,description,creation_date) values ('" + rootfilename + "','" + params['NAME'] + "','" + params['DESCRIPTION'] + "',now());")
@@ -1725,79 +1829,83 @@ class updatePlanningUnitStatuses:
 		finally:
 			return getResponse({}, response)
 
-			
-#creates the marxan planning unit versus species file in the folder for the given user and scenario using the planning_grid_name which corresponds to a feature class in the postgis database and the array of interest feature ids which are in the spec.dat file
-	#https://db-server-blishten.c9users.io/marxan/webAPI.py/createPuVSprFile?user=asd&scenario=test&planning_grid_name=pu_asm_terrestrial_hexagons_10
-class createPuVSprFile:
+#https://db-server-blishten.c9users.io/marxan/webAPI.py/preprocessFeature?user=andrew&scenario=Tonga%20marine&planning_grid_name=pu_ton_marine_hexagons_50&feature_class_name=intersesting_habitat&id=63408405
+class preprocessFeature:
 	def GET(self):
 		try:
-			log("createPuVSprFile",1)			
+			log("preprocessFeature",1)		
+			
 			#initialise the request objects
 			user_folder, scenario_folder, input_folder, output_folder, response, params = initialiseGetRequest(web.ctx.query[1:])
-			if "PLANNING_GRID_NAME" not in params.keys():
-				raise MarxanServicesError("No planning grid")
+			for key in ["PLANNING_GRID_NAME", "FEATURE_CLASS_NAME", "ID"]:
+				if key not in params.keys():
+					raise MarxanServicesError("No " + key.lower() + " parameter")
 			
-			#first, get the interest feature ids and names from the pu.dat file
-			features = _getInterestFeaturesForScenario(scenario_folder,input_folder, False)
-			feature_ids = features.index.tolist() #as a python list
-			
+			#get the feature that needs to be processed
+			log("Features to process: " + params['FEATURE_CLASS_NAME'])
+
+			#get the species_id
+			speciesId = int(params['ID'])
+	
+			#TODO: the name of the puvspr.dat file is hardcoded here - need to read it from the input.dat file			
 			#get the interest features that already have records in the puvspr.dat file or an empty dataframe if the file does not exist
 			if (os.path.exists(input_folder + "puvspr.dat")):
-				log("Getting features already processed in " + input_folder + "puvspr.dat")
-				df = pandas.read_csv(input_folder + "puvspr.dat", sep='\t')
+				existingData = pandas.read_csv(input_folder + "puvspr.dat")
+				#make sure there are not existing records for this feature - otherwise we will get duplicates
+				existingData = existingData[~existingData.species.isin([speciesId])]
+				
 			else:
 				# no file so create an empty data frame to hold the data for the puvspr.dat file
 				d = {'amount':pandas.Series([], dtype='float64'),'species':pandas.Series([], dtype='int64'),'pu':pandas.Series([], dtype='int64')}
-				df = pandas.DataFrame(data=d)
-				df = df[['species', 'pu', 'amount']] #reorder the columns
-				
-			#get the unique interest features that have already been processed
-			feature_ids_already_processed = df.species.unique() #as a numpy.ndarray
-			log("Feature ids already processed: " + ','.join([str(s) for s in feature_ids_already_processed]))
-			
-			#get the features that need to be processed
-			feature_ids_to_process = list(set(feature_ids) - set(feature_ids_already_processed))
-			log("Features ids to process: " + ','.join([str(s) for s in feature_ids_to_process]))
-			
-			#get the column index of the oid field in the interest features
-			oid_index = features.columns.values.tolist().index('oid')
-			
-			#get the column index of the feature_class_name field in the interest features
-			feature_class_name_index = features.columns.values.tolist().index('feature_class_name')
+				existingData = pandas.DataFrame(data=d)
+				existingData = existingData[['species', 'pu', 'amount']] #reorder the columns
 
-			#filter the filters by the oid field
-			features_to_process = [f[feature_class_name_index] for f in features.values.tolist() if f[oid_index] in feature_ids_to_process]
-			log("Features to process: " + ','.join(features_to_process))
-			
-			#iterate through the interest features and do the intersection
-			try:
-				conn = psycopg2.connect("dbname='biopama' host='localhost' user='jrc' password='thargal88'")
-				for feature in features_to_process:
-					#intersect the features with the planning units
-					log("Intersecting '" + feature + "' with '" + params['PLANNING_GRID_NAME'] + "'");
-					query = "select * from marxan.get_pu_areas_for_interest_feature('" + params['PLANNING_GRID_NAME'] + "','" + feature + "');"
+			#do the intersection
+			oldVersion = getInputParameter(scenario_folder + 'input.dat',"OLDVERSION")
+			#see whether we are using an old version of marxan - in this case we cant do an intersection on spatial data, but the intersection will have already been done with the results already in the puvspr.dat file
+			if oldVersion == 'False':
+				
+				try:
+					#do the intersection	
+					conn = psycopg2.connect("dbname='biopama' host='localhost' user='jrc' password='thargal88'")
+					#intersect the feature with the planning units
+					log("Intersecting feature '" + params['FEATURE_CLASS_NAME'] + "' with '" + params['PLANNING_GRID_NAME'] + "'");
+					query = "select * from marxan.get_pu_areas_for_interest_feature('" + params['PLANNING_GRID_NAME'] + "','" + params['FEATURE_CLASS_NAME'] + "');"
 					log(query)
-					df2 = pandas.read_sql_query(query,con=conn)   
-					log(str(len(df2.index)) + " intersecting planning units")
-					df = df.append(df2)
+					
+					#get the intersection results
+					intersectionData = pandas.read_sql_query(query, con=conn)  
+
+					#append them to the existing data
+					if not intersectionData.empty:
+						existingData = existingData.append(intersectionData)
+
+					#write the results to the puvspr.dat file
+					existingData.to_csv(input_folder + "puvspr.dat",index = False)
+					
+				except (psycopg2.InternalError, psycopg2.IntegrityError, DatabaseError) as e: #postgis error
+					raise MarxanServicesError("Error creating puvspr.dat file: " + e.message + ". Error type: " + str(sys.exc_info()[0]))
 				
-				#write the results to the puvspr.dat file
-				df.to_csv(input_folder + "puvspr.dat", sep='\t',index =False)
-				
-			except (psycopg2.InternalError, psycopg2.IntegrityError, DatabaseError) as e: #postgis error
-				raise MarxanServicesError("Error creating puvspr.dat file: " + e.message + ". Error type: " + str(sys.exc_info()[0]))
+				finally:
+					conn.close() 
 			
-			finally:
-				conn.close() 
+			#get the count of intersecting planning units
+			pu_count = existingData[existingData.species.isin([speciesId])].agg({'pu' : ['count']})['pu'].iloc[0]
+			
+			#get the total area of the feature across all planning units
+			pu_area = existingData[existingData.species.isin([speciesId])].agg({'amount': ['sum']})['amount'].iloc[0]
+			
+			#write the pu_area and pu_count to the preprocessing.dat file 
+			row = pandas.DataFrame.from_dict({'id':speciesId, 'pu_area': [pu_area], 'pu_count': [pu_count]}).astype({'id': 'int', 'pu_area':'float', 'pu_count':'int'})
+			_writeToDatFile(input_folder + "preprocessing.dat", row)
 
 			#update the input.dat file
 			updateParameters(scenario_folder + "input.dat", {'PUVSPRNAME': 'puvspr.dat'})
-			
 			#set the response
-			response.update({'info': "puvspr.dat file created"})
+			response.update({'info': "Feature " + params['FEATURE_CLASS_NAME'] + " preprocessed", "feature_class_name": params['FEATURE_CLASS_NAME'], "pu_area" : str(pu_area),"pu_count" : str(pu_count), "id":str(speciesId)})
 			
-		except Exception as inst: #handles all errors TODO: Modify all other error handlers to use this approach
-			response.update({'error': str(inst)})
+		except Exception as e: #handles all errors TODO: Modify all other error handlers to use this approach
+			response.update({'error': repr(e)})
 
 		finally:
 			return getResponse(params, response)
@@ -1836,8 +1944,8 @@ class createScenarioFromWizard():
 			# create the pu.dat file
 			_createPUdatafile(scenario_folder, input_folder, data["planning_grid_name"])
 
-			# create the spec.dat file
-			_createSPECdatafile(scenario_folder, input_folder, data["interest_features"], data["target_values"], data['spf_values'])
+			# update the spec.dat file
+			_updateSPECdatafile(scenario_folder, input_folder, data["interest_features"], data["target_values"], data['spf_values'])
 
 			# #set the response
 			response.update({'info': "Scenario '" + data["scenario"] + "' created", 'name': data["scenario"]})
@@ -1849,10 +1957,10 @@ class createScenarioFromWizard():
 			return getResponse({}, response)
 	
 #creates/updates the spec.dat file with the passed parameters
-class createSpecFile():
+class updateSpecFile():
 	def POST(self):
 		try:
-			log("createScenarioFromWizard",1)			
+			log("updateSpecFile",1)			
 			#get the data from the POST request
 			data = web.input()
 			response={}
@@ -1864,9 +1972,9 @@ class createSpecFile():
 
 			#get the various folders
 			user_folder, scenario_folder, input_folder, output_folder = initialisePostRequest(data)
-						
-			# create the spec.dat file
-			_createSPECdatafile(scenario_folder, input_folder, data["interest_features"], data["target_values"], data['spf_values'])
+			
+			# update the spec.dat file
+			_updateSPECdatafile(scenario_folder, input_folder, data["interest_features"], data["target_values"], data['spf_values'])
 
 			# #set the response
 			response.update({'info': "spec.dat file updated"})
