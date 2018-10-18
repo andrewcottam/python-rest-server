@@ -19,6 +19,8 @@ SAMPLE_TILESET_ID = "blishten.3ogmvag8" #this is the sample data that comes with
 SAMPLE_TILESET_ID_PNG = "blishten.pulayer_costt" #png example
 ISO3_FIELD_NAME = "iso3"
 PLANNING_UNIT_GRID_NAME = "grid"
+FEATURE_PREPROCESSING_FILENAME = "feature_preprocessing.dat"
+PROTECTED_AREA_INTERSECTIONS_FILENAME = "protected_area_intersections.dat"
 
 urls = (
   "/listUsers", "listUsers",
@@ -30,8 +32,8 @@ urls = (
   "/listScenarios", "listScenarios",
   "/getScenario","getScenario",
   "/createScenario", "createScenario",
-  "/cloneScenario", "cloneScenario",
   "/createScenarioFromWizard", "createScenarioFromWizard",
+  "/cloneScenario", "cloneScenario",
   "/deleteScenario", "deleteScenario",
   "/renameScenario", "renameScenario",
   "/renameDescription", "renameDescription",
@@ -41,22 +43,16 @@ urls = (
   "/loadSolution", "loadSolution", 
   "/postFile","postFile",
   "/postFileWithFolder","postFileWithFolder",
-  "/postSimpleFile","postSimpleFile",
   "/postShapefile","postShapefile",
   "/importShapefile","importShapefile",
   "/updateParameter","updateParameter",
-  "/createPlanningUnitsGrid","createPlanningUnitsGrid", #python implementation
-  "/createPlanningUnits","createPlanningUnits", #postgis implementation
   "/uploadTilesetToMapBox","uploadTilesetToMapBox",
-  "/getInterestFeaturesForScenario","getInterestFeaturesForScenario",
   "/deleteInterestFeature","deleteInterestFeature",
-  "/createPUdatafile","createPUdatafile",
   "/updateSpecFile","updateSpecFile",
   "/preprocessFeature","preprocessFeature",
-  "/getPlanningUnits","getPlanningUnits",
   "/getPlanningUnitGrids","getPlanningUnitGrids",
-  "/updatePlanningUnits","updatePlanningUnits",
-  "/updatePlanningUnitStatuses","updatePlanningUnitStatuses"
+  "/updatePlanningUnitStatuses","updatePlanningUnitStatuses",
+  "/getPAIntersections","getPAIntersections"
   )
 
 def log(message, messageType=0):
@@ -137,30 +133,40 @@ def getKeys(s):
 	matches = re.findall('\\n[A-Z1-9_]{2,}', s, re.DOTALL)
 	return [m[1:] for m in matches]
   
-def updatePuValues(csvFile, ids, reset):
-    #get the data from the csv file
-    df = pandas.read_csv(csvFile)
-    #reset all the statuses to 0
-    df['status'] = 0
-    if (not reset):
-	    #create an index to be able to join the two data frames
-	    df = df.set_index('id')
-	    #create a dataframe with the data to be updated - this will be based on the new ids
-	    data = [[int(i),int(1),int(3)] for i in ids]  
-	    #make a dataframe from the update data
-	    df2 = pandas.DataFrame(numpy.array(data),columns=['id','cost','status'])
-	    #create an index to be able to join the two data frames
-	    df2 = df2.set_index('id')
-	    #update the data
-	    df.update(df2)
-	    #remove the index
-	    df = df.reset_index()
-    #set the datatypes
-    df = df.astype({'id':'int64','cost':'int64','status':'int64'})
-    #write to file
-    df.to_csv(csvFile, sep=',',index =False)
-    return None
+#create the array of the puids 
+def puidsArrayToPuDatFormat(puid_array, pu_status):
+	return pandas.DataFrame([[int(i),pu_status] for i in puid_array], columns=['id','status_new']).astype({'id':'int64','status_new':'int64'})
 
+def updatePuValues(csvFile, status1_ids, status2_ids, status3_ids):
+	status1 = puidsArrayToPuDatFormat(status1_ids,1)
+	status2 = puidsArrayToPuDatFormat(status2_ids,2)
+	status3 = puidsArrayToPuDatFormat(status3_ids,3)
+	log (status1)
+	log (status2)
+	log (status3)
+	#read the data from the pu.dat file 
+	df = pandas.read_csv(csvFile)
+	
+	#reset the status for all planning units
+	df['status'] = 0
+	
+	#concatenate the status arrays
+	df2 = pandas.concat([status1, status2, status3])
+	
+	#join the new statuses to the ones from the pu.dat file
+	df = df.merge(df2, on='id', how='left')
+	
+	#update the status value
+	df['status_final'] = df['status_new'].fillna(df['status']).astype('int')
+	df = df.drop(['status_new', 'status'], axis=1)
+	df.rename(columns={'status_final':'status'}, inplace=True)
+
+	#set the datatypes
+	df = df.astype({'id':'int64','cost':'int64','status':'int64'})
+	
+	#write to file
+	df.to_csv(csvFile, sep=',',index =False)
+	
 def getUserData(filename):
 	log("getUserData for " + filename)
 	returnDict = {}
@@ -201,7 +207,7 @@ def getInputParameters(filename):
 		elif k in ['BLM', 'PROP', 'RANDSEED', 'NUMREPS', 'NUMITNS', 'STARTTEMP', 'NUMTEMP', 'COSTTHRESH', 'THRESHPEN1', 'THRESHPEN2', 'SAVERUN', 'SAVEBEST', 'SAVESUMMARY', 'SAVESCEN', 'SAVETARGMET', 'SAVESUMSOLN', 'SAVEPENALTY', 'SAVELOG', 'RUNMODE', 'MISSLEVEL', 'ITIMPTYPE', 'HEURTYPE', 'CLUMPTYPE', 'VERBOSITY', 'SAVESOLUTIONSMATRIX']:
 			key, value = getKeyValue(s, k) #run parameters 
 			paramsArray.append({'key': key, 'value': value})
-		elif k in ['DESCRIPTION','CREATEDATE','PLANNING_UNIT_NAME','OLDVERSION']: # metadata section of the input.dat file
+		elif k in ['DESCRIPTION','CREATEDATE','PLANNING_UNIT_NAME','OLDVERSION','IUCN_CATEGORY']: # metadata section of the input.dat file
 			key, value = getKeyValue(s, k)
 			metadataDict.update({key: value})
 			if k=='PLANNING_UNIT_NAME':
@@ -237,18 +243,6 @@ def updateParameters(data_file, newParams):
 			except ValueError:
 				continue
 	return 
-
-#no longer used
-# def createShapefileWithResults():
-# 	log("createShapefileWithResults")
-# 	#get the planning units as a GeoDataFrame
-# 	planning_units = gpd.read_file(MARXAN_FOLDER + "pulayer1km.shp")
-# 	#get the summed solutions as a DataFrame
-# 	summed_solution = pandas.read_csv(MARXAN_OUTPUT_FOLDER + "output_ssoln.txt")
-# 	#join these datasets together 
-# 	summed_solution_shapes = planning_units.merge(summed_solution,left_on="PUID",right_on="planning_unit")
-# 	#write the results to a shapefile
-# 	summed_solution_shapes.to_file(MARXAN_OUTPUT_FOLDER + "results.shp")
 
 def deleteAllFiles(folder):
 	log("deleteAllFiles")
@@ -391,130 +385,7 @@ def checkScenarioExists(scenario_folder):
 	if not (os.path.exists(scenario_folder)):
 		raise MarxanServicesError("Scenario '" + scenario_folder[scenario_folder[:-1].rindex("/") + 1:-1] + "' does not exist")     
 
-#reads in the text file and transforms the data so that each row has: <number of solutions>, <puid array>
-# csvFile - the file with the comma separated data in
-# columnName - 
-def getVectorTileOptimisedOutput(csvFile, columnName, cols, vals, skipFirst):
-	df= pandas.read_csv(csvFile).pivot(index=columnName,columns=cols,values=vals) #pivots the data
-	transposed = df[df.columns].apply(lambda x: ','.join(x.dropna().astype(int).astype(str)),axis=1) #joins the multiple columns to produce a comma-separated string of PUIDs with the number
-	if skipFirst:
-		arr = [[i,[int(n) for n in j.split(",")]] for (i,j) in transposed.items()][1:] #convert to an array of arrays and skip the first item as this one is all of the planning units which do not occur in any solution and dont need to be mapped
-	else:
-		arr = [[i,[int(n) for n in j.split(",")]] for (i,j) in transposed.items()]
-	
-	return json.loads(json.dumps(arr))
-	
-#no longer used
-# def CreateGrid(pu_folder, _type, area, xleft, ybottom, xright, ytop):
-# 	log("CreateGrid: " + pu_folder + " " + _type + " " + str(area) + " " + str(xleft) + " " + str(ybottom) + " " + str(xright) + " " + str(ytop))
-# 	#error checks
-# 	if area <0:
-# 		raise MarxanServicesError("Area value is invalid")
-# 	if (xleft >= xright):
-# 		raise MarxanServicesError("Invalid extent width: " + unicode(xleft) + " - " + unicode(xright))
-# 	if (ybottom >= ytop):
-# 		raise MarxanServicesError("Invalid extent height: " + unicode(ybottom) + " - " + unicode(ytop))
 
-# 	#create the output shapefile
-# 	w = shapefile.Writer(pu_folder + PLANNING_UNIT_GRID_NAME)
-# 	w.field('grid_id', 'C')
-		
-# 	#calculate the spacing between the grids to give you the required area
-# 	if (_type == 'hexagon'):
-# 		sideLength = math.sqrt((2*area)/(3*math.sqrt(3)))
-# 		xspacing = sideLength + (sideLength * 0.5) # the cos(60) = 0.5
-# 		yspacing = xspacing / 0.866025
-# 		# To preserve symmetry, hspacing is fixed relative to vspacing
-# 		xvertexlo = 0.288675134594813 * yspacing
-# 		xvertexhi = 0.577350269189626 * yspacing
-# 		xspacing = xvertexlo + xvertexhi
-# 	else:
-# 		sideLength = math.sqrt(area)
-# 		xspacing = sideLength
-# 		yspacing = xspacing / 0.866025
-
-# 	#get the number of rows/columns
-# 	rows = int(math.ceil((ytop - ybottom) / yspacing))
-# 	columns = int(math.ceil((xright - xleft) / xspacing))
-	
-# 	log("SIDELENGTH: " + str(sideLength))
-# 	log("ROWS: " + str(rows))
-# 	log("COLUMNS: " + str(columns))
-# 	log("XSPACING: " + str(xspacing))
-# 	log("YSPACING: " + str(yspacing))
-	
-# 	#initialise the feature counter
-# 	feature_count = 0
-	
-# 	#THE FOLLOWING CODE COMES LARGELY FROM MICHAEL MINN'S MMQGIS PLUGIN - http://michaelminn.com/linux/mmqgis/
-# 	for column in range(0, int(math.floor(float(xright - xleft) / xspacing))):
-		
-# 		if (_type == 'hexagon'):
-# 			x1 = xleft + (column * xspacing)    # far left
-# 			x2 = x1 + (xvertexhi - xvertexlo)    # left
-# 			x3 = xleft + ((column + 1) * xspacing)    # right
-# 			x4 = x3 + (xvertexhi - xvertexlo)    # far right
-# 		else:
-# 			x1 = xleft + (column * xspacing)    # left
-# 			x2 = xleft + ((column + 1) * xspacing)    # right
-			
-# 		for row in range(0, int(math.floor(float(ytop - ybottom) / yspacing))):
-
-# 			if (_type == 'hexagon'):
-# 				if (column % 2) == 0:
-# 					y1 = ybottom + (((row * 2) + 0) * (yspacing / 2))    # hi
-# 					y2 = ybottom + (((row * 2) + 1) * (yspacing / 2))    # mid
-# 					y3 = ybottom + (((row * 2) + 2) * (yspacing / 2))    # lo
-# 				else:
-# 					y1 = ybottom + (((row * 2) + 1) * (yspacing / 2))    # hi
-# 					y2 = ybottom + (((row * 2) + 2) * (yspacing / 2))    # mid
-# 					y3 = ybottom + (((row * 2) + 3) * (yspacing / 2))    #lo
-				
-# 				#create the coordinates of the hexagon
-# 				coordinates = [[x1, y2], [x2, y1], [x3, y1], [x4, y2], [x3, y3], [x2, y3], [x1, y2]]
-			
-# 			else: #regular grid
-# 				y1 = ybottom + (row * yspacing)    
-# 				y2 = ybottom + ((row + 1) * yspacing)     
-				
-# 				#create the coordinates of the grid
-# 				coordinates = [[x1,y1],[x1,y2],[x2,y2],[x2,y1],[x1,y1]]
-			
-# 			#create a polygon with the coordinates
-# 			w.poly([coordinates])
-
-# 			#set the feature id
-# 			w.record(feature_count)
-			
-# 			#increment the counter
-# 			feature_count = feature_count + 1
-
-# 	w.close()    
-
-# 	log(str(feature_count) + " grid features created")
-	
-# 	# Write the prj file as it doesn't get produced because of a bug
-# 	file = open(pu_folder + PLANNING_UNIT_GRID_NAME + ".prj","w") 
-# 	file.write('PROJCS["NSIDC EASE-Grid Global",GEOGCS["Unspecified datum based upon the International 1924 Authalic Sphere",DATUM["Not_specified_based_on_International_1924_Authalic_Sphere",SPHEROID["International 1924 Authalic Sphere",6371228,0,AUTHORITY["EPSG","7057"]],AUTHORITY["EPSG","6053"]],PRIMEM["Greenwich",0,AUTHORITY["EPSG","8901"]],UNIT["degree",0.01745329251994328,AUTHORITY["EPSG","9122"]],AUTHORITY["EPSG","4053"]],UNIT["metre",1,AUTHORITY["EPSG","9001"]],PROJECTION["Cylindrical_Equal_Area"],PARAMETER["standard_parallel_1",30],PARAMETER["central_meridian",0],PARAMETER["false_easting",0],PARAMETER["false_northing",0],AUTHORITY["EPSG","3410"],AXIS["X",EAST],AXIS["Y",NORTH]]')
-# 	file.close()
-	
-# 	#return the grid as a geopandas dataset
-# 	return gpd.read_file(pu_folder + PLANNING_UNIT_GRID_NAME + ".shp")
-
-##############################################################################################################################################################################################################################################
-#################  MapBox routines
-##############################################################################################################################################################################################################################################
-
-#uploads a tileset to mapbox using the filename of the file (filename) to upload and the name of the resulting tileset (_name)
-def uploadTileset(filename, _name):
-	log("Uploading to MapBox: " + filename + " " + _name)
-	#create an instance of the upload service
-	service = Uploader(access_token=MAPBOX_ACCESS_TOKEN)	
-	with open(filename, 'rb') as src:
-		upload_resp = service.upload(src, _name)
-		upload_id = upload_resp.json()['id']
-		return upload_id
-		
 #creates the pu.dat file using the passed paramters - used in the web API and internally in the createScenarioFromWizard function
 def _createPUdatafile(scenario_folder, input_folder, planning_grid_name):
 	#create the pu.dat file
@@ -603,10 +474,10 @@ def _updateSPECdatafile(scenario_folder, input_folder, interest_features, target
 				df2.to_csv(input_folder + puvsprname, index =False)
 	
 			#update the preprocessing.dat file to remove any species that are no longer in the scenario - these will need to be preprocessed again
-			if (os.path.exists(input_folder + "preprocessing.dat")):
+			if (os.path.exists(input_folder + FEATURE_PREPROCESSING_FILENAME)):
 				
 				#if the file exists then get the existing data
-				df2 = pandas.read_csv(input_folder + "preprocessing.dat")
+				df2 = pandas.read_csv(input_folder + FEATURE_PREPROCESSING_FILENAME)
 				
 				#remove the feature records for those features that are no longer in the scenario
 				df2 = df2[~df2.id.isin(removedIds)]
@@ -614,7 +485,7 @@ def _updateSPECdatafile(scenario_folder, input_folder, interest_features, target
 				#write the results to the puvspr.dat file
 				log("writing the preprocessing file")
 				log(df2)
-				df2.to_csv(input_folder + "preprocessing.dat", index =False)
+				df2.to_csv(input_folder + FEATURE_PREPROCESSING_FILENAME, index =False)
 		
 		#open the file writer
 		file = open(input_folder  + "spec.dat","w") 
@@ -706,7 +577,7 @@ def _getInterestFeaturesForScenario(scenario_folder,input_folder, web_call):
 				#get the target as an integer - Marxan has it as a percentage, i.e. convert 0.17 -> 17
 				output_df['target_value'] = (output_df['target_value'] * 100).astype(int)
 		
-		except (psycopg2.InternalError, psycopg2.IntegrityError) as e: #postgis error
+		except (DatabaseError, psycopg2.InternalError, psycopg2.IntegrityError) as e: #postgis error
 			raise MarxanServicesError("Error getting interest features for scenario: " + e.message)
 		
 		finally:
@@ -716,7 +587,41 @@ def _getInterestFeaturesForScenario(scenario_folder,input_folder, web_call):
 		raise 
 
 	return output_df #return a pandas dataframe	
+	
+#converts a data frame with duplicate values into a normalised array
+def normaliseDataFrame(df, columnToNormaliseBy, puidColumnName):
+	#get the groups from the data
+	groups = df.groupby(by = columnToNormaliseBy).groups
+	
+	#build the response, e.g. a normal data frame with repeated values in the columnToNormaliseBy -> [["VI", [7, 8, 9]], ["IV", [0, 1, 2, 3, 4]], ["V", [5, 6]]]
+	response = [[g, df[puidColumnName][groups[g]].values.tolist()] for g in groups if g not in [0]]
+	return response
 
+#gets the intersection between the passed grid and the countries protected areas (with iucn categories)
+def _getPAIntersections(input_folder):
+	
+	#see if the intersections file already exists
+	if (os.path.exists(input_folder + PROTECTED_AREA_INTERSECTIONS_FILENAME)):
+		df = pandas.read_csv(input_folder + PROTECTED_AREA_INTERSECTIONS_FILENAME)
+		return normaliseDataFrame(df, "iucn_cat", "puid")
+
+	else:
+		return None
+
+##############################################################################################################################################################################################################################################
+#################  MapBox routines
+##############################################################################################################################################################################################################################################
+
+#uploads a tileset to mapbox using the filename of the file (filename) to upload and the name of the resulting tileset (_name)
+def uploadTileset(filename, _name):
+	log("Uploading to MapBox: " + filename + " " + _name)
+	#create an instance of the upload service
+	service = Uploader(access_token=MAPBOX_ACCESS_TOKEN)	
+	with open(filename, 'rb') as src:
+		upload_resp = service.upload(src, _name)
+		upload_id = upload_resp.json()['id']
+		return upload_id
+		
 #uploads a feature class with the passed feature class name to MapBox as a tileset using the MapBox Uploads API
 class uploadTilesetToMapBox():
 	def GET(self):
@@ -999,7 +904,7 @@ class listScenarios():
 			return getResponse(params, response)
 		  
 #loads all of the data for the scenario and returns the files and the run parameters as separate arrays
-	#https://db-server-blishten.c9users.io/marxan/webAPI.py/getScenario?user=andrew&scenario=Sample%20scenario&callback=__jp2
+	#https://db-server-blishten.c9users.io/marxan/webAPI.py/pollResults?user=andrew&scenario=Tonga%20marine%20new&numreps=10&checkForExistingRun=true&callback=__jp13
 class getScenario():
 	def GET(self):
 		try:
@@ -1021,29 +926,33 @@ class getScenario():
 			df = pandas.read_sql_query("SELECT oid::integer as id, creation_date, feature_class_name, alias, _area area, description FROM marxan.metadata_interest_features order by alias;", con=conn)
 			allfeatures = json.loads(df.to_json(orient='records'))
 
-			#get the preprocessing state
-			if (os.path.exists(input_folder + "preprocessing.dat")):
-				preprocessing = json.loads(pandas.read_csv(input_folder + "preprocessing.dat").to_json(orient='values')) 
+			#get the feature preprocessing state
+			if (os.path.exists(input_folder + FEATURE_PREPROCESSING_FILENAME)):
+				preprocessing = json.loads(pandas.read_csv(input_folder + FEATURE_PREPROCESSING_FILENAME).to_json(orient='values')) 
 			else:
 				preprocessing = []
 			
 			#get the planning unit data
-			pu_data = getVectorTileOptimisedOutput(input_folder + "pu.dat","status","id","id", True)
+			df = pandas.read_csv(input_folder + "pu.dat")
+			pu_data = normaliseDataFrame(df, "status", "id")
+			
+			#get the protected area intersections
+			protected_area_intersections = _getPAIntersections(input_folder)
 			
 			#set the response
-			response.update({'scenario': params['SCENARIO'],'metadata': metadata, 'files': files, 'runParameters': runParams, 'renderer': renderer, 'features': features, 'allFeatures': allfeatures, 'preprocessing': preprocessing, 'planning_units': pu_data})
+			response.update({'scenario': params['SCENARIO'],'metadata': metadata, 'files': files, 'runParameters': runParams, 'renderer': renderer, 'features': features, 'allFeatures': allfeatures, 'feature_preprocessing': preprocessing, 'planning_units': pu_data, 'protected_area_intersections': protected_area_intersections})
 			
 			#set the users last scenario so it will load on login
 			updateParameters(user_folder + "user.dat", {'LASTSCENARIO': params['SCENARIO']})
 
-		except (MarxanServicesError) as e:
-			response.update({'error': e.message})
+		except (DatabaseError, MarxanServicesError) as e:
+			response.update({'error': repr(e)})
 
 		finally:
 			conn.close()
 			return getResponse(params, response)
 
-#creates a new scenario in the users folder
+#creates a new scenario in the users folder - currently used when importing an existing marxan project
 	#https://db-server-blishten.c9users.io/marxan/webAPI2.py/createScenario?user=andrew&scenario=test2&description=Groovy%20description&callback=__jp2
 class createScenario():
 	def GET(self):
@@ -1236,7 +1145,7 @@ class runMarxan:
 			return getResponse(params, response)
 
 #polls the server for the results of a marxan run and if complete returns the sum of solutions, summary info on all runs and the log
-	#https://db-server-blishten.c9users.io/marxan/webAPI2.py/pollResults?user=asd2&scenario=Marxan%20default%20scenario&numreps=10&returnall=false&callback=__jp2
+	#https://db-server-blishten.c9users.io/marxan/webAPI.py/pollResults?user=andrew&scenario=Marxan%20default%20scenario&numreps=10&checkForExistingRun=true&callback=__jp16
 class pollResults:
 	def GET(self):
 		try:
@@ -1271,7 +1180,8 @@ class pollResults:
 				sum = json.loads(pandas.read_csv(output_folder + "output_sum.txt").to_json(orient='values')) 
 				
 				#read the data from the output_ssoln.txt file
-				ssoln = getVectorTileOptimisedOutput(output_folder + "output_ssoln.txt", "number", "planning_unit", "planning_unit", True)
+				df = pandas.read_csv(output_folder + "output_ssoln.txt")
+				ssoln = normaliseDataFrame(df, "number", "planning_unit")
 
 				#get the info message to return
 				if params["CHECKFOREXISTINGRUN"] == "true":
@@ -1307,7 +1217,8 @@ class loadSolution:
 			#get the content from the solution - this will be 'output_r00001.txt'
 			solutionFile = output_folder + "output_r" + "%05d" % (int(params["SOLUTION"]),)  + ".txt"
 			try:
-				solution = getVectorTileOptimisedOutput(solutionFile, "solution","planning_unit", "planning_unit", True)
+				df = pandas.read_csv(solutionFile)
+				solution = normaliseDataFrame(df, "solution", "planning_unit")
 
 			except (IOError):
 				raise MarxanServicesError("Solution not found")
@@ -1355,7 +1266,7 @@ class postFile:
 class postFileWithFolder:
 	def POST(self):
 		try:
-			log("postSimpleFile",1)
+			log("postFileWithFolder",1)
 			#there will be 2 variables in the data: 
 			# user			= the user who is uploading the file
 			# scenario		= the name of the scenario
@@ -1546,229 +1457,6 @@ class updateParameter:
 		finally:
 			return getResponse(params, response)
 
-#creates a hexagon grid on the server to use for partitioning the area of interest into hexagons - this is a Python implementation - NO LONGER USED
-	#https://db-server-blishten.c9users.io/marxan/webAPI.py/createPlanningUnitsGrid?user=asd&aoi=PNG&domain=terrestrial&type=hexagon&area=50000000&name=test_hexagon
-# class createPlanningUnitsGrid:
-# 	def GET(self):
-# 		try:
-# 			log("createPlanningUnitsGrid",1)
-# 			#initialise the request objects
-# 			user_folder, scenario_folder, input_folder, output_folder, response, params = initialiseGetRequest(web.ctx.query[1:])
-# 			if "USER" not in params.keys():
-# 				raise MarxanServicesError("No user parameter")
-# 			if "AOI" not in params.keys(): #either a 3-letter country code or a user-defined area which is the name of a shapefile in the __shapefiles/aois folder
-# 				raise MarxanServicesError("No area of interest parameter")
-# 			if "DOMAIN" not in params.keys(): #either marine or terrestrial
-# 				raise MarxanServicesError("No domain parameter")
-# 			if "TYPE" not in params.keys(): #hexagon or square
-# 				raise MarxanServicesError("No type parameter") 
-# 			if "AREA" not in params.keys(): #the area of each polygon in m2
-# 				raise MarxanServicesError("No area parameter")
-# 			if "NAME" not in params.keys():
-# 				raise MarxanServicesError("No name parameter")
-
-# 			#initialise the logging
-# 			log("USER: " + params["USER"])
-# 			log("AOI: " + params["AOI"])
-# 			log("DOMAIN: " + params["DOMAIN"])
-# 			log("TYPE: " + params["TYPE"])
-# 			log("AREA: " + params["AREA"])
-# 			log("NAME: " + params["NAME"])
-
-# 			#set the output folder where the planning unit shapefile will be created
-# 			pu_folder = user_folder + "__shapefiles" + os.sep + "planning units" + os.sep
-			
-# 			#get the aoi shapefile - this will either be a feature in the GAUL/EEZ shapefile for a country with the 3 letter country code or a user-defined area which is the name of a shapefile in the __shapefiles/aois folder
-# 			if params["DOMAIN"] == "terrestrial":
-# 				domain = "gaul_2015_simplified"
-# 			else:
-# 				domain = "marine_simplified_5km"
-				
-# 			#open the world shapfile for marine or terrestrial - these folders no longer exist
-# 			world = gpd.read_file(MARXAN_FOLDER + "input_shapefiles" + os.sep + domain + ".shp")
-			
-# 			#select the feature with the 3 letter country code
-# 			try:
-# 				aoi = world.loc[world[ISO3_FIELD_NAME]==params["AOI"]] 
-				
-# 			except (KeyError) as e:
-# 				raise MarxanServicesError ("Required field '" + ISO3_FIELD_NAME + "' not found in " + domain + " dataset")
-			
-# 			#the 3 letter country code doesnt exist
-# 			if aoi.empty:
-				
-# 				#try opening the aoi as a named shapefile in the users __shapefiles folder
-# 				try:
-# 					aoi = gpd.read_file(user_folder + "__shapefiles" + os.sep + "aois" + os.sep + params["AOI"] + ".shp")
-					
-# 				#if that doesnt exist then throw an error
-# 				except (IOError) as e:
-# 					raise MarxanServicesError ("User-defined area " + params["AOI"] + " not found")
-				
-# 			#reproject and get the bounds
-# 			bounds = aoi['geometry'].to_crs(epsg=3410).bounds.iloc[0] #iloc gets the first bounds
-# 			log("AOI FEATURES: " + str(aoi.shape[0]))
-# 			log("BOUNDS: " + str(bounds.minx) + " " + str(bounds.miny) + " " + str(bounds.maxx) + " " + str(bounds.maxy))
-			
-# 			#check the planning unit does not already exist
-# 			filename = params["NAME"]
-# 			if os.path.exists(pu_folder + filename + ".shp"):
-# 				raise MarxanServicesError("The planning unit '" + filename + "' already exists")
-				
-# 			#create the grid - by default this will have the filename grid.shp
-# 			grid = CreateGrid(pu_folder, params["TYPE"], float(params["AREA"]), bounds.minx, bounds.miny, bounds.maxx, bounds.maxy)
-
-# 			#spatially join the grid with the aoi to get the output shapefile
-# 			output = gpd.sjoin(aoi.to_crs(epsg=3410), grid, how="right", op='intersects')
-			
-# 			#select only those features that intersect with the aoi
-# 			results = output.loc[output[ISO3_FIELD_NAME]==params["AOI"]]
-# 			log("OUTPUT FEATURES: " + str(results.shape[0]))
-
-# 			#write the output to file
-# 			results.to_file(pu_folder + filename + ".shp")
-# 			log("Features written to '" + pu_folder + filename + ".shp" + "'")
-
-# 			#return the response
-# 			response.update({'info': "Grid created to '" + pu_folder + filename + ".shp" + "'"})
-			
-# 		except (MarxanServicesError) as e:
-# 			response.update({'error': e.message})
-
-# 		except:
-# 			response.update({'error': str(sys.exc_info()[1])})
-
-# 		finally:
-# 			#remove the temporary grid files
-# 			files = glob.glob(pu_folder + PLANNING_UNIT_GRID_NAME + '.*')
-# 			if len(files)>0:
-# 				[os.remove(f) for f in files]            
-				
-# 			return getResponse(params, response)
-
-#creates a hexagon grid on the server to use for partitioning the area of interest into hexagons - this is a PostGIS implementation - NO LONGER USED
-	#https://db-server-blishten.c9users.io/marxan/webAPI.py/createPlanningUnits?user=asd&aoi=PNG&domain=terrestrial&type=hexagon&area=50
-class createPlanningUnits:
-	def GET(self):
-		try:
-			log("createPlanningUnits",1)
-			#initialise the request objects
-			user_folder, scenario_folder, input_folder, output_folder, response, params = initialiseGetRequest(web.ctx.query[1:])
-			if "USER" not in params.keys():
-				raise MarxanServicesError("No user parameter")
-			if "AOI" not in params.keys(): #either a 3-letter country code in which case the aoi will be taken from the country boundary or a user-defined area which is the name of a feature class in the PostGIS database marxan.aoi_<user>_<featureclassname>
-				raise MarxanServicesError("No area of interest parameter")
-			if "DOMAIN" not in params.keys(): #either marine or terrestrial
-				raise MarxanServicesError("No domain parameter")
-			if "TYPE" not in params.keys(): #hexagon or square
-				raise MarxanServicesError("No type parameter") 
-			if "AREA" not in params.keys(): #the area of each polygon in m2
-				raise MarxanServicesError("No area parameter")
-
-			#initialise the logging
-			logging.basicConfig(filename='/home/ubuntu/lib/apache2/log/marxan.log', level=logging.INFO, format='%(asctime)s %(levelname)s %(message)s')
-			logging.info("=============================================================================================")
-			logging.info("USER: " + params["USER"])
-			logging.info("AOI: " + params["AOI"])
-			logging.info("DOMAIN: " + params["DOMAIN"])
-			logging.info("TYPE: " + params["TYPE"])
-			logging.info("AREA: " + params["AREA"])
-			
-			try:
-				#connect to the db
-				conn = psycopg2.connect("dbname='biopama' host='localhost' user='jrc' password='thargal88'")
-				cur = conn.cursor()
-
-				#run the query to produce the planning units feature class
-				cur.execute("SELECT marxan.hexagons(" + params['AREA'] + ",'" + params['AOI'] + "','" + params["DOMAIN"] + "');")
-				
-				#get the name of the feature class
-				feature_class_name = cur.fetchone()[0]
-				
-				#set the response for creating the feature class
-				response.update({'postgis': "Planning unit '" + feature_class_name + "' created"})
-				logging.info("Planning unit '" + feature_class_name + "' created")
-				
-				# #populate the metadata information for the planning units feature class
-				# alias = params["AOI"] + " " + params["AREA"] + "Km2 " + params["TYPE"] + "s created"
-				# cur.execute("INSERT INTO marxan.metadata_planning_units(feature_class_name, alias, description, creation_date, country_id, aoi_id, domain, _area) values ('" + feature_class_name + "','" + alias + "','Bla bla bla',now(),1,null,'" + params["TYPE"] + "'," + params["AREA"] + ");")
-				# logging.info("Metadata record created")
-				
-			except (psycopg2.InternalError) as e: #postgis error
-				raise MarxanServicesError("Error creating planning units: " + e.message)
-				
-			finally:
-				cur.close()
-				conn.commit()
-				conn.close()
-			
-			#create the file to upload to MapBox
-			logging.info("Exporting to KML")
-			outputFile = '/home/ubuntu/workspace/' + feature_class_name + '.kml'
-			cmd = '/home/ubuntu/anaconda2/bin/ogr2ogr -f kml ' + outputFile + ' "PG:host=localhost dbname=biopama user=jrc password=thargal88" -sql "select * from Marxan.' + feature_class_name + '" -nln hexagons -s_srs EPSG:3410 -t_srs EPSG:3857'
-			os.system(cmd)
-			
-			#upload to mapbox
-			uploadId = uploadTileset(outputFile, feature_class_name)
-			#set the response for uploading to mapbox
-			response.update({'mapbox': "Tileset '" + feature_class_name + "' uploading",'uploadid': uploadId})
-						
-		except (MarxanServicesError) as e:
-			response.update({'error': e.message})
-		
-		except (errors.HTTPError) as e: #mapbox error
-			logging.info("mapbox error")
-			response.update({'error': "Unable to upload to MapBox: " + e.message})
-			
-		except:
-			response.update({'error': str(sys.exc_info()[1])})
-
-		finally:
-			return getResponse(params, response)
-
-#creates the marxan planning unit data file, pu.dat in the folder for the given user and scenario using the planning_grid_name which corresponds to a feature class in the postgis database
-	#https://db-server-blishten.c9users.io/marxan/webAPI.py/createPUdatafile?user=asd&scenario=test&planning_grid_name=pu_asm_terrestrial_hexagons_10
-class createPUdatafile:
-	def GET(self):
-		try:
-			log("createPUdatafile",1)			
-			#initialise the request objects
-			user_folder, scenario_folder, input_folder, output_folder, response, params = initialiseGetRequest(web.ctx.query[1:])
-			if "PLANNING_GRID_NAME" not in params.keys():
-				raise MarxanServicesError("No planning grid")
-			
-			#create the pu.dat file
-			_createPUdatafile(scenario_folder, input_folder, params["PLANNING_GRID_NAME"])
-				
-			#set the response
-			response.update({'info': "pu.dat file created"})
-			
-		except (MarxanServicesError) as e:
-			response.update({'error': e.message})
-
-		finally:
-			return getResponse(params, response)
-
-#https://db-server-blishten.c9users.io/marxan/webAPI.py/getPlanningUnits?user=andrew&scenario=Tonga%20marine
-class getPlanningUnits:
-	def GET(self):
-		try:
-			log("getPlanningUnits",1)			
-			#initialise the request objects
-			user_folder, scenario_folder, input_folder, output_folder, response, params = initialiseGetRequest(web.ctx.query[1:])
-			
-			#get the pu.dat file - this excludes all planning units with 0 as there are lots of them and they can be rendererd with a default renderer
-			pu_data = getVectorTileOptimisedOutput(input_folder + "pu.dat","status","id","id", True)
-			
-			#set the response
-			response.update({'info': pu_data})
-			
-		except (MarxanServicesError) as e:
-			response.update({'error': e.message})
-
-		finally:
-			return getResponse(params, response)
-
 #gets the planning unit grids 
 #https://db-server-blishten.c9users.io/marxan/webAPI.py/getPlanningUnitGrids
 class getPlanningUnitGrids():
@@ -1787,35 +1475,12 @@ class getPlanningUnitGrids():
 			data = pandas.read_sql_query(query, con=conn).to_dict(orient="records")
 			response.update({'info':'Planning unit grids retrieved','planning_unit_grids':data})
 		
-		except (psycopg2.InternalError, psycopg2.IntegrityError, DatabaseError) as e: #postgis error
+		except (DatabaseError, psycopg2.InternalError, psycopg2.IntegrityError) as e: #postgis error
 			raise MarxanServicesError("Error creating puvspr.dat file: " + e.message + ". Error type: " + str(sys.exc_info()[0]))
 		
 		finally:
 			conn.close() 
 			return getResponse(params, response)
-
-# updates the data in the pu.dat file with new data in 3 arrays: ids, costs, statuses - UNTESTED!!
-class updatePlanningUnits:
-	def POST(self):
-		try:
-			log("updatePlanningUnits",1)			
-			data = web.input()
-			response={}
-
-			#get the various folders
-			user_folder, scenario_folder, input_folder, output_folder = initialisePostRequest(data)
-						
-			# update the pu.dat file
-			_updatePUdatafile(input_folder, data["ids"], data["costs"], data['statuses'])
-			
-			#set the response
-			response.update({'info': "pu.dat file updated"})
-			
-		except (MarxanServicesError) as e:
-			response.update({'error': e.message})
-
-		finally:
-			return getResponse({}, response)
 
 # updates the data in the pu.dat file by setting all of the items in the puidsToExclude list to have a status of 1
 class updatePlanningUnitStatuses:
@@ -1824,18 +1489,22 @@ class updatePlanningUnitStatuses:
 			log("updatePlanningUnitStatuses",1)	
 			data = web.input()
 			response={}
+			status1_ids =[]
+			status2_ids =[]
+			status3_ids=[]
 			
 			#get the various folders
 			user_folder, scenario_folder, input_folder, output_folder = initialisePostRequest(data)
-						
-			# update the pu.dat file
-			puids = data["status3"].strip()
-			log(puids)
-			if (len(puids)>0):
-				puids_array = puids.split(",")
-				updatePuValues(input_folder + "pu.dat", puids_array, False)
-			else:
-				updatePuValues(input_folder + "pu.dat", None, True)
+
+			# get the status ids as lists
+			if "status1" in data.keys():
+				status1_ids = data["status1"].strip().split(",")
+			if "status2" in data.keys():
+				status2_ids = data["status2"].strip().split(",")
+			if "status3" in data.keys():
+				status3_ids = data["status3"].strip().split(",")
+				
+			updatePuValues(input_folder + "pu.dat", status1_ids, status2_ids, status3_ids)
 			
 			#set the response
 			response.update({'info': "pu.dat file updated"})
@@ -1903,7 +1572,7 @@ class preprocessFeature:
 					#write the results to the puvspr.dat file
 					existingData.to_csv(input_folder + "puvspr.dat",index = False)
 					
-				except (psycopg2.InternalError, psycopg2.IntegrityError, DatabaseError) as e: #postgis error
+				except (DatabaseError, psycopg2.InternalError, psycopg2.IntegrityError) as e: #postgis error
 					raise MarxanServicesError("Error creating puvspr.dat file: " + e.message + ". Error type: " + str(sys.exc_info()[0]))
 				
 				finally:
@@ -1917,7 +1586,7 @@ class preprocessFeature:
 			
 			#write the pu_area and pu_count to the preprocessing.dat file 
 			row = pandas.DataFrame.from_dict({'id':speciesId, 'pu_area': [pu_area], 'pu_count': [pu_count]}).astype({'id': 'int', 'pu_area':'float', 'pu_count':'int'})
-			_writeToDatFile(input_folder + "preprocessing.dat", row)
+			_writeToDatFile(input_folder + FEATURE_PREPROCESSING_FILENAME, row)
 
 			#update the input.dat file
 			updateParameters(scenario_folder + "input.dat", {'PUVSPRNAME': 'puvspr.dat'})
@@ -2005,30 +1674,6 @@ class updateSpecFile():
 		finally:
 			return getResponse({}, response)
 	
-#gets the data for the interest features for the passed scenario
-	#https://db-server-blishten.c9users.io/marxan/webAPI.py/getInterestFeaturesForScenario?user=asd&scenario=test
-class getInterestFeaturesForScenario:
-	def GET(self):
-		try:
-			log("getInterestFeaturesForScenario",1)			
-			#initialise the request objects
-			user_folder, scenario_folder, input_folder, output_folder, response, params = initialiseGetRequest(web.ctx.query[1:])
-
-			#get the interest features as a pandas dataframe			
-			output_df = _getInterestFeaturesForScenario(scenario_folder,input_folder, True)
-
-			#convert to a dict ready to convert to json and return a value
-			_json = output_df.to_dict(orient="records")
-
-			#write the response
-			response = {'info': _json}
-			
-		except (MarxanServicesError) as e:
-			response.update({'error': e.message})
-
-		finally:
-			return getResponse(params, response)
-
 #deletes the interest feature dataset from postgis and removes the record in the metadata_interest_features table
 	#https://db-server-blishten.c9users.io/marxan/webAPI.py/deleteInterestFeature?interest_feature_name=png_provinces
 class deleteInterestFeature:
@@ -2072,6 +1717,43 @@ class deleteInterestFeature:
 			response = {'error': e.message}
 	
 		finally:
+			return getResponse(params, response)
+
+#does the intersection between the passed grid and the countries protected areas (with iucn categories)
+#https://db-server-blishten.c9users.io/marxan/webAPI.py/getPAIntersections?user=andrew&scenario=Tonga%20marine%20new&planning_grid_name=pu_ton_marine_hexagons_50
+class getPAIntersections():
+	def GET(self):
+		log("getPAIntersections",1)			
+		#initialise the request objects
+		user_folder, scenario_folder, input_folder, output_folder, response, params = initialiseGetRequest(web.ctx.query[1:])
+
+		#error checking
+		for key in ["USER", "SCENARIO", "PLANNING_GRID_NAME"]:
+			if key not in params.keys():
+				raise MarxanServicesError("No " + key + " parameter")
+
+		#get a connection to the database
+		try:
+			conn = psycopg2.connect("dbname='biopama' host='localhost' user='jrc' password='thargal88'")
+			
+			#get all the puids that intersect protected areas in this country
+			# query = "SELECT DISTINCT iucn_cat, grid.puid FROM (SELECT iucn_cat, geom FROM marxan.wdpa WHERE iucn_cat = ANY (ARRAY['Ib','II','Ia','V','III','IV','VI'])) AS wdpa, marxan." + params['PLANNING_GRID_NAME'] + " grid WHERE ST_Intersects(wdpa.geom, ST_Transform(grid.geometry, 4326)) ORDER BY 1,2;"
+			query = "SELECT DISTINCT iucn_cat, grid.puid FROM (SELECT iucn_cat, geom FROM marxan.wdpa) AS wdpa, marxan." + params['PLANNING_GRID_NAME'] + " grid WHERE ST_Intersects(wdpa.geom, ST_Transform(grid.geometry, 4326)) ORDER BY 1,2;"
+			df = pandas.read_sql_query(query, con=conn)
+			#normalise the data, e.g. to [["VI", [7, 8, 9]], ["IV", [0, 1, 2, 3, 4]], ["V", [5, 6]]]
+			puids = normaliseDataFrame(df, "iucn_cat", "puid")
+			
+			#write the response
+			response = {'info': puids}
+			
+			#write the data to file
+			df.to_csv(input_folder + PROTECTED_AREA_INTERSECTIONS_FILENAME, index =False)
+			
+		except (DatabaseError, MarxanServicesError) as e:
+			response.update({'error': e.message})
+
+		finally:
+			conn.close()
 			return getResponse(params, response)
 
 app = web.application(urls, locals())  
