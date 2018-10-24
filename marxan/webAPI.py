@@ -1,5 +1,5 @@
 #!/home/ubuntu/miniconda2/bin/python
-#the above line forces the CGI script to use the Anaconda Python interpreter
+#the above line forces the CGI script to use the miniconda Python interpreter
 import sys, os, web, subprocess, urllib, pandas, json, glob, shutil, re, datetime, logging, CustomExceptionClasses, shapefile, math, psycopg2, zipfile, commands, numpy
 from collections import OrderedDict
 from shutil import copyfile
@@ -29,13 +29,13 @@ urls = (
   "/resendPassword","resendPassword",
   "/getUser","getUser",
   "/updateUser","updateUser",
-  "/listScenarios", "listScenarios",
-  "/getScenario","getScenario",
-  "/createScenario", "createScenario",
-  "/createScenarioFromWizard", "createScenarioFromWizard",
-  "/cloneScenario", "cloneScenario",
-  "/deleteScenario", "deleteScenario",
-  "/renameScenario", "renameScenario",
+  "/listProjects", "listProjects",
+  "/getProject","getProject",
+  "/createProject", "createProject",
+  "/createProjectFromWizard", "createProjectFromWizard",
+  "/cloneProject", "cloneProject",
+  "/deleteProject", "deleteProject",
+  "/renameProject", "renameProject",
   "/renameDescription", "renameDescription",
   "/updateRunParams","updateRunParams",
   "/runMarxan", "runMarxan", 
@@ -85,7 +85,9 @@ def readFile(filename):
 
 #there are some characters in the log file which cause the json parser to fail - this functions removes them
 def cleanLog(log):
-	return log.replace("\x90","")
+	log = log.replace("\x90","")
+	log = log.replace(chr(176),"") #Graphic character, low density dotted
+	return log
 	
 def createZipfile(lstFileNames, folder, zipfilename):
 	with zipfile.ZipFile(folder + zipfilename, 'w') as myzip:
@@ -116,6 +118,8 @@ def getEndOfLine(text):
 
 #gets a single input parameter, i.e. the actual value and not the parameter name
 def getInputParameter(filename, parameter):
+	if not os.path.exists(filename):
+		raise MarxanServicesError("The file does not exist: " + filename)
 	#get the file contents
 	s = readFile(filename)
 	p1 = s.index(parameter) #get the first position of the parameter
@@ -141,9 +145,6 @@ def updatePuValues(csvFile, status1_ids, status2_ids, status3_ids):
 	status1 = puidsArrayToPuDatFormat(status1_ids,1)
 	status2 = puidsArrayToPuDatFormat(status2_ids,2)
 	status3 = puidsArrayToPuDatFormat(status3_ids,3)
-	log (status1)
-	log (status2)
-	log (status3)
 	#read the data from the pu.dat file 
 	df = pandas.read_csv(csvFile)
 	
@@ -272,7 +273,7 @@ def _writeToDatFile(file, dataframe):
 #initialises the rest request and response from a GET request
 # 1. initialises a response dict which is used to populate the response information
 # 2. gets the request parameters as a dictionary which are passed as query parameters
-# 3. sets the user, scenario, input and output folders for the user 
+# 3. sets the user, project, input and output folders for the user 
 def initialiseGetRequest(queryString):
 	log("initialiseGetRequest with queryString: " + queryString)
 	#initialise the response dictionary
@@ -281,13 +282,13 @@ def initialiseGetRequest(queryString):
 	params = getQueryStringParams(queryString)
 	#get the user, input and output folders
 	params.setdefault('USER','') # set to an empty string if it is not passed, e.g. in getUsers, createUsers etc.
-	params.setdefault('SCENARIO','Sample case study') # set to a sample string if it is not passed, e.g. in getUsers, createUsers etc.
-	user_folder, scenario_folder, input_folder, output_folder = getFolders(params['USER'], params['SCENARIO'])
+	params.setdefault('PROJECT','Sample case study') # set to a sample string if it is not passed, e.g. in getUsers, createUsers etc.
+	user_folder, project_folder, input_folder, output_folder = getFolders(params['USER'], params['PROJECT'])
 	# log("user_folder: " + user_folder)
-	# log("scenario_folder: " + scenario_folder)
+	# log("project_folder: " + project_folder)
 	# log("input_folder: " + input_folder)
 	# log("output_folder: " + output_folder)
-	return user_folder, scenario_folder, input_folder, output_folder, response, params
+	return user_folder, project_folder, input_folder, output_folder, response, params
 
 #initialises the folders from a POST request
 def initialisePostRequest(data):
@@ -296,26 +297,26 @@ def initialisePostRequest(data):
 		if not ("user" in data.keys()):
 			raise MarxanServicesError("No user parameter found")
 
-		#check the scenario parameter - if none is passed then set a default = some updates dont pass a scenario, e.g. updateUser, createUser etc
-		if not ("scenario" in data.keys()):
-			scenario = "Sample case study"
+		#check the project parameter - if none is passed then set a default = some updates dont pass a project, e.g. updateUser, createUser etc
+		if not ("project" in data.keys()):
+			project = "Sample case study"
 		else:
-			scenario = data.scenario
+			project = data.project
 
-		#get the user, scenario, input and output folders
-		user_folder, scenario_folder, input_folder, output_folder = getFolders(data.user, scenario)
+		#get the user, project, input and output folders
+		user_folder, project_folder, input_folder, output_folder = getFolders(data.user, project)
 		
 	except (MarxanServicesError) as e:
 		raise
 		
-	return user_folder, scenario_folder, input_folder, output_folder
+	return user_folder, project_folder, input_folder, output_folder
 	
-def getFolders(user, scenario):
+def getFolders(user, project):
 	user_folder = MARXAN_FOLDER + user + os.sep
-	scenario_folder = user_folder + scenario + os.sep
-	input_folder =  scenario_folder + "input" + os.sep
-	output_folder = scenario_folder + "output" + os.sep
-	return user_folder, scenario_folder, input_folder, output_folder
+	project_folder = user_folder + project + os.sep
+	input_folder =  project_folder + "input" + os.sep
+	output_folder = project_folder + "output" + os.sep
+	return user_folder, project_folder, input_folder, output_folder
 	
 #creates the response payload by converting the dict to json, setting the response type and if necessary wrapping the response in a jsonp function to support asynchronous calls
 def getResponse(params, response):
@@ -324,16 +325,21 @@ def getResponse(params, response):
 		web.header('Content-Type','application/json') 
 		#convert the dict to json
 		responseJson = json.dumps(response)
+			
+	except (UnicodeDecodeError) as e: #sometimes the Marxan log causes decoding issues
+		log("UnicodeDecodeError")
+		if 'log' in response.keys():
+			response['log'] = "Server warning: Unable to encode the Marxan log. <br/>" + repr(e)
+			response['warning'] = "Unable to encode the Marxan log"
+			responseJson = json.dumps(response)
+		
+	finally:
 		log("RESPONSE: " + responseJson[:100], 2)
 		#get the callback parameter for jsonp calls
 		if "CALLBACK" in params.keys():
 			return params["CALLBACK"] + "(" + responseJson + ")"
 		else:
 			return responseJson
-			
-	except (UnicodeDecodeError) as e:
-		return {'error': e}
-		
 	
 def getUsers():
 	log("getUsers")
@@ -347,19 +353,19 @@ def getUsers():
 		users.remove("output")
 	return users
 
-def getScenarios(user):
-	log("getScenarios for user: " + user)
+def getProjects(user):
+	log("getProjects for user: " + user)
 	#get a list of folders underneath the users home folder
-	scenario_folders = glob.glob(MARXAN_FOLDER + user + os.sep + "*/")
+	project_folders = glob.glob(MARXAN_FOLDER + user + os.sep + "*/")
 	#sort the folders
-	scenario_folders.sort()
-	scenarios = []
+	project_folders.sort()
+	projects = []
 	
-	#iterate through the scenario folders and get the parameters for each scenario to return
-	for dir in scenario_folders:
+	#iterate through the project folders and get the parameters for each project to return
+	for dir in project_folders:
 		#get the name of the folder 
-		scenario = dir[:-1][dir[:-1].rfind("/")+1:]
-		if (scenario[:2] != "__"): #folders beginning with __ are system folders
+		project = dir[:-1][dir[:-1].rfind("/")+1:]
+		if (project[:2] != "__"): #folders beginning with __ are system folders
 			#get the data from the input file
 			s = readFile(dir + 'input.dat')
 			#get the description
@@ -367,27 +373,27 @@ def getScenarios(user):
 			createDate = getInputParameter(dir + 'input.dat',"CREATEDATE")
 			oldVersion = getInputParameter(dir + 'input.dat',"OLDVERSION")
 			#create a dict to save the data
-			scenarios.append({'name':scenario,'description':desc,'createdate': createDate,'oldVersion':oldVersion})
-	return scenarios
+			projects.append({'name':project,'description':desc,'createdate': createDate,'oldVersion':oldVersion})
+	return projects
 
-def createEmptyScenario(input_folder, output_folder,scenario_folder, description):
-	log("createEmptyScenario")
-	#create the scenario input and output folders
+def createEmptyProject(input_folder, output_folder,project_folder, description):
+	log("createEmptyProject")
+	#create the project input and output folders
 	os.makedirs(input_folder)
 	os.makedirs(output_folder)
 	#copy in the required files
-	copyfile(MARXAN_FOLDER + 'input.dat.empty', scenario_folder + 'input.dat')
+	copyfile(MARXAN_FOLDER + 'input.dat.empty', project_folder + 'input.dat')
 	#update the description and creation date parameters in the input.dat file
-	updateParameters(scenario_folder + "input.dat", {'DESCRIPTION': description, 'CREATEDATE': datetime.datetime.now().strftime("%a, %d %b %Y %H:%M:%S")})
+	updateParameters(project_folder + "input.dat", {'DESCRIPTION': description, 'CREATEDATE': datetime.datetime.now().strftime("%a, %d %b %Y %H:%M:%S")})
 
-def checkScenarioExists(scenario_folder):
-	log("checkScenarioExists: " + scenario_folder)
-	if not (os.path.exists(scenario_folder)):
-		raise MarxanServicesError("Scenario '" + scenario_folder[scenario_folder[:-1].rindex("/") + 1:-1] + "' does not exist")     
+def checkProjectExists(project_folder):
+	log("checkProjectExists: " + project_folder)
+	if not (os.path.exists(project_folder)):
+		raise MarxanServicesError("Project '" + project_folder[project_folder[:-1].rindex("/") + 1:-1] + "' does not exist")     
 
 
-#creates the pu.dat file using the passed paramters - used in the web API and internally in the createScenarioFromWizard function
-def _createPUdatafile(scenario_folder, input_folder, planning_grid_name):
+#creates the pu.dat file using the passed paramters - used in the web API and internally in the createProjectFromWizard function
+def _createPUdatafile(project_folder, input_folder, planning_grid_name):
 	#create the pu.dat file
 	try:
 		log("_createPUdatafile")
@@ -412,7 +418,7 @@ def _createPUdatafile(scenario_folder, input_folder, planning_grid_name):
 		conn.close()
 	
 	#update the input.dat file
-	updateParameters(scenario_folder + "input.dat", {'PUNAME': 'pu.dat'})
+	updateParameters(project_folder + "input.dat", {'PUNAME': 'pu.dat'})
 
 def _updatePUdatafile(input_folder, id_values, cost_values, status_values):
 	try:
@@ -437,8 +443,8 @@ def _updatePUdatafile(input_folder, id_values, cost_values, status_values):
 	finally:
 		return ""	
 
-#creates the spec.dat file using the passed paramters - used in the web API and internally in the createScenarioFromWizard function
-def _updateSPECdatafile(scenario_folder, input_folder, interest_features, target_values, spf_values):
+#creates the spec.dat file using the passed paramters - used in the web API and internally in the createProjectFromWizard function
+def _updateSPECdatafile(project_folder, input_folder, interest_features, target_values, spf_values):
 	#update the spec.dat file
 	try:
 		ids = interest_features.split(",")
@@ -447,39 +453,37 @@ def _updateSPECdatafile(scenario_folder, input_folder, interest_features, target
 		props = target_values.split(",") 
 		spfs = spf_values.split(",") 
 
-		#get the data from the spec.dat file
-		df = getSpecDatData(input_folder, scenario_folder)
-		
-		#get all the species that are no longer in the scenario
-		df = getSpecDatData(input_folder, scenario_folder)
-		oldsIds = df.id.unique().tolist() 
-		removedIds = list(set(oldsIds) - set(ids))
-
+		#get all the species that are no longer in the project
+		df = getSpecDatData(input_folder, project_folder)
+		removedIds = []
+		if not df.empty:
+			oldsIds = df.id.unique().tolist() 
+			removedIds = list(set(oldsIds) - set(ids))
 		log("Removing features " + ",".join([str(i) for i in removedIds]))
 
-		#update the puvspr.dat file to remove any species that are no longer in the scenario
+		#update the puvspr.dat file to remove any species that are no longer in the project
 		if len(removedIds) > 0:
 			
 			#get the name of the puvspr file from the input.dat file
-			puvsprname = getInputParameter(scenario_folder + 'input.dat',"PUVSPRNAME")
+			puvsprname = getInputParameter(project_folder + 'input.dat',"PUVSPRNAME")
 			if (puvsprname) and (os.path.exists(input_folder + puvsprname)):
 
 				#if the file exists then get the existing data
 				df2 = pandas.read_csv(input_folder + puvsprname)
 
-				#remove the species records for those species that are no longer in the scenario
+				#remove the species records for those species that are no longer in the project
 				df2 = df2[~df2.species.isin(removedIds)]
 
 				#write the results to the puvspr.dat file
 				df2.to_csv(input_folder + puvsprname, index =False)
 	
-			#update the preprocessing.dat file to remove any species that are no longer in the scenario - these will need to be preprocessed again
+			#update the preprocessing.dat file to remove any species that are no longer in the project - these will need to be preprocessed again
 			if (os.path.exists(input_folder + FEATURE_PREPROCESSING_FILENAME)):
 				
 				#if the file exists then get the existing data
 				df2 = pandas.read_csv(input_folder + FEATURE_PREPROCESSING_FILENAME)
 				
-				#remove the feature records for those features that are no longer in the scenario
+				#remove the feature records for those features that are no longer in the project
 				df2 = df2[~df2.id.isin(removedIds)]
 
 				#write the results to the puvspr.dat file
@@ -504,31 +508,37 @@ def _updateSPECdatafile(scenario_folder, input_folder, interest_features, target
 		
 	finally:
 		#update the input.dat file
-		updateParameters(scenario_folder + "input.dat", {'SPECNAME': 'spec.dat'})
+		updateParameters(project_folder + "input.dat", {'SPECNAME': 'spec.dat'})
 
-def getSpecDatData(input_folder, scenario_folder):
-
-	#get the name of the spec.dat file
-	specname = getInputParameter(scenario_folder + 'input.dat',"SPECNAME")
-
-	#get the values from the spec.dat file
-	df = pandas.read_csv(input_folder + specname)
+def getSpecDatData(input_folder, project_folder):
+	try:
+		#get the name of the spec.dat file
+		specname = getInputParameter(project_folder + 'input.dat', "SPECNAME")
+		
+		#get the values from the spec.dat file - specname will be empty if it doesnt yet exist
+		if (specname != ""):
+			df = pandas.read_csv(input_folder + specname)
+		else:
+			return pandas.DataFrame()
+		
+		#test the spec.dat file is not empty
+		if (df.empty):
+			raise MarxanServicesError("There are no conservation features")
 	
-	#test the spec.dat file is not empty
-	if (df.empty):
-		raise MarxanServicesError("There are no conservation features")
-
-	return df
+		return df
+		
+	except (MarxanServicesError) as e:
+		log(repr(e))
 
 #returns the following
 #[{"description": "Groovy", "feature_class_name": "seagrasses_pacific", "creation_date": "2018-08-29 12:30:09.836061", "alias": "Pacific Seagrasses", "target_value": 70, "id": 63407942, "spf": 40}, {"description": "Groovy", "feature_class_name": "png2", "creation_date": "2018-08-29 12:30:09.836061", "alias": "Pacific Coral Reefs", "target_value": 80, "id": 63408006, "spf": 40}]
-def _getInterestFeaturesForScenario(scenario_folder,input_folder, web_call):
+def _getInterestFeaturesForProject(project_folder,input_folder, web_call):
 	#set web_call to True if the results will be transformed for a webclient, e.g. in spec.dat the target_value is called 'prop'
 	try:
-		log("_getInterestFeaturesForScenario: " + input_folder)
+		log("_getInterestFeaturesForProject: " + input_folder)
 		
 		#get the data from the spec.dat file
-		df = getSpecDatData(input_folder, scenario_folder)
+		df = getSpecDatData(input_folder, project_folder)
 		
 		try:
 			#connect to the db
@@ -541,9 +551,9 @@ def _getInterestFeaturesForScenario(scenario_folder,input_folder, web_call):
 			output_df = df.set_index("id").join(df2.set_index("oid"))
 
 			# #get the name of the puvspr file from the input.dat file
-			# puvsprname = getInputParameter(scenario_folder + 'input.dat',"PUVSPRNAME")
+			# puvsprname = getInputParameter(project_folder + 'input.dat',"PUVSPRNAME")
 
-			# #if it is a new scenario there may not be an entry in the input.dat file for PUVSPRNAME or the file may not exist
+			# #if it is a new project there may not be an entry in the input.dat file for PUVSPRNAME or the file may not exist
 			# if (puvsprname) and (os.path.exists(input_folder + puvsprname)):
 				
 			# 		#if the file exists then get the species that have already been processed
@@ -561,9 +571,9 @@ def _getInterestFeaturesForScenario(scenario_folder,input_folder, web_call):
 			
 			#add the index as a column
 			output_df['oid'] = output_df.index
-			#if the scenario is imported from the desktop version of Marxan then add default values for those properties that dont exist, e.g. description, feature_class_name, creation_date, alias
+			#if the project is imported from the desktop version of Marxan then add default values for those properties that dont exist, e.g. description, feature_class_name, creation_date, alias
 			if (pandas.isnull(output_df.iloc[0]['feature_class_name'])): #test for a feature_class_name value which wont exist if it is a marxan desktop database
-				log("Scenario is imported from Marxan Desktop - adding default values")
+				log("Project is imported from Marxan Desktop - adding default values")
 				output_df['tmp'] = 'Unique identifer: '
 				output_df['alias'] = output_df['tmp'].str.cat((output_df['oid']).apply(str)) # 'Unique identifer: 4702435'
 				output_df['feature_class_name'] = output_df['oid']
@@ -578,7 +588,7 @@ def _getInterestFeaturesForScenario(scenario_folder,input_folder, web_call):
 				output_df['target_value'] = (output_df['target_value'] * 100).astype(int)
 		
 		except (DatabaseError, psycopg2.InternalError, psycopg2.IntegrityError) as e: #postgis error
-			raise MarxanServicesError("Error getting interest features for scenario: " + e.message)
+			raise MarxanServicesError("Error getting interest features for project: " + e.message)
 		
 		finally:
 			conn.close()
@@ -623,6 +633,7 @@ def uploadTileset(filename, _name):
 		return upload_id
 		
 #uploads a feature class with the passed feature class name to MapBox as a tileset using the MapBox Uploads API
+# https://db-server-blishten.c9users.io/marxan/webAPI.py/uploadTilesetToMapBox?feature_class_name=pu_ton_marine_hexagons_20&mapbox_layer_name=hexagons&callback=__jp9
 class uploadTilesetToMapBox():
 	def GET(self):
 		try:
@@ -644,8 +655,15 @@ class uploadTilesetToMapBox():
 			#create the file to upload to MapBox - now using shapefiles as kml files only import the name and description properties into a mapbox tileset
 			log("Uploading " + feature_class_name + " to MapBox")
 			outputFile = MARXAN_FOLDER + feature_class_name + '.shp'
-			cmd = '/home/ubuntu/anaconda2/bin/ogr2ogr -f "ESRI Shapefile" ' + outputFile + ' "PG:host=localhost dbname=biopama user=jrc password=thargal88" -sql "select * from Marxan.' + feature_class_name + '" -nln ' + mapbox_layer_name + ' -s_srs EPSG:3410 -t_srs EPSG:3857'
-			os.system(cmd)
+			cmd = '/home/ubuntu/miniconda2/bin/ogr2ogr -f "ESRI Shapefile" ' + outputFile + ' "PG:host=localhost dbname=biopama user=jrc password=thargal88" -sql "select * from Marxan.' + feature_class_name + '" -nln ' + mapbox_layer_name + ' -s_srs EPSG:3410 -t_srs EPSG:3857'
+			
+			#run the conversion and getting the response
+			log("Running command: " + cmd)
+			status, output = commands.getstatusoutput(cmd) 
+			
+			#check for errors from the ogr2ogr command
+			if output != "":
+				raise MarxanServicesError("The ogr2ogr command failed with the error: " + output)
 
 			#zip the shapefile to upload to Mapbox
 			lstFilenames = glob.glob(MARXAN_FOLDER + feature_class_name + '.*')
@@ -681,7 +699,7 @@ class listUsers():
 		try:
 			log("listUsers",1)
 			#initialise the request objects
-			user_folder, scenario_folder, input_folder, output_folder, response, params = initialiseGetRequest(web.ctx.query[1:])
+			user_folder, project_folder, input_folder, output_folder, response, params = initialiseGetRequest(web.ctx.query[1:])
 			users = getUsers()
 			response.update({'users':users})
 
@@ -698,7 +716,7 @@ class resendPassword():
 		try:
 			log("resendPassword",1)
 			#initialise the request objects
-			user_folder, scenario_folder, input_folder, output_folder, response, params = initialiseGetRequest(web.ctx.query[1:])
+			user_folder, project_folder, input_folder, output_folder, response, params = initialiseGetRequest(web.ctx.query[1:])
 			
 			#error checking
 			if params["USER"] == "":
@@ -723,7 +741,7 @@ class validateUser():
 		try:
 			log("Validating user",1)
 			#initialise the request objects
-			user_folder, scenario_folder, input_folder, output_folder, response, params = initialiseGetRequest(web.ctx.query[1:])
+			user_folder, project_folder, input_folder, output_folder, response, params = initialiseGetRequest(web.ctx.query[1:])
 			
 			#error checking
 			if "USER" not in params.keys():
@@ -772,7 +790,7 @@ class createUser():
 					raise MarxanServicesError("No " + key + " parameter")
 
 			#get the various folders
-			user_folder, scenario_folder, input_folder, output_folder = initialisePostRequest(data)
+			user_folder, project_folder, input_folder, output_folder = initialisePostRequest(data)
 						
 			#get the users
 			users = getUsers()
@@ -785,38 +803,38 @@ class createUser():
 			if user in users:
 				raise MarxanServicesError("User '" + user + "' already exists")
 				
-			#create the folders for the PNG scenario and copy the input.dat file
-			log("create the folders for the PNG scenario and copy the input.dat file")
-			createEmptyScenario(input_folder, output_folder,scenario_folder,"Sample case study for Papua New Guinea marine areas developed by The Nature Conservancy and the University of Queensland. For more information visit: http://www.environment.gov.au/marine/publications/national-marine-conservation-assessment-png")
+			#create the folders for the PNG project and copy the input.dat file
+			log("create the folders for the PNG project and copy the input.dat file")
+			createEmptyProject(input_folder, output_folder,project_folder,"Sample case study for Papua New Guinea marine areas developed by The Nature Conservancy and the University of Queensland. For more information visit: http://www.environment.gov.au/marine/publications/national-marine-conservation-assessment-png")
 
 			#copy the default user data
 			copyfile(MARXAN_FOLDER + 'user.dat', user_folder + 'user.dat')
 
-			#copy the sample scenario files into the input folder
+			#copy the sample project files into the input folder
 			copyfile(MARXAN_INPUT_FOLDER + 'bound_png.dat', input_folder + 'bound_png.dat')
 			copyfile(MARXAN_INPUT_FOLDER + 'pu_png.dat', input_folder + 'pu_png.dat')
 			copyfile(MARXAN_INPUT_FOLDER + 'puvspr_png.dat', input_folder + 'puvspr_png.dat')
 			copyfile(MARXAN_INPUT_FOLDER + 'spec_png.dat', input_folder + 'spec_png.dat')
 
 			#update the input.dat file with information on the input files
-			updateParameters(scenario_folder + "input.dat", {'PUNAME': 'pu_png.dat','SPECNAME': 'spec_png.dat','PUVSPRNAME': 'puvspr_png.dat','BOUNDNAME': 'bound_png.dat','PLANNING_UNIT_NAME': SAMPLE_TILESET_ID_PNG})
+			updateParameters(project_folder + "input.dat", {'PUNAME': 'pu_png.dat','SPECNAME': 'spec_png.dat','PUVSPRNAME': 'puvspr_png.dat','BOUNDNAME': 'bound_png.dat','PLANNING_UNIT_NAME': SAMPLE_TILESET_ID_PNG})
 
-			#create another scenario for the marxan default data 
-			log("create another scenario for the marxan default data")
-			data["scenario"] = "Marxan default"
-			user_folder, scenario_folder, input_folder, output_folder = initialisePostRequest(data)
+			#create another project for the marxan default data 
+			log("create another project for the marxan default data")
+			data["project"] = "Marxan default"
+			user_folder, project_folder, input_folder, output_folder = initialisePostRequest(data)
 
-			#create the folders for the PNG scenario and copy the input.dat file
-			createEmptyScenario(input_folder, output_folder,scenario_folder,"Sample case study using the Marxan sample data")
+			#create the folders for the PNG project and copy the input.dat file
+			createEmptyProject(input_folder, output_folder,project_folder,"Sample case study using the Marxan sample data")
 			
-			#copy the sample scenario files into the input folder
+			#copy the sample project files into the input folder
 			copyfile(MARXAN_INPUT_FOLDER + 'bound_orig.dat', input_folder + 'bound.dat')
 			copyfile(MARXAN_INPUT_FOLDER + 'pu_orig.dat', input_folder + 'pu.dat')
 			copyfile(MARXAN_INPUT_FOLDER + 'puvspr_orig.dat', input_folder + 'puvspr.dat')
 			copyfile(MARXAN_INPUT_FOLDER + 'spec_orig.dat', input_folder + 'spec.dat')
 			
 			#update the input.dat file with information on the input files
-			updateParameters(scenario_folder + "input.dat", {'PUNAME': 'pu.dat','SPECNAME': 'spec.dat','PUVSPRNAME': 'puvspr.dat','BOUNDNAME': 'bound.dat','PLANNING_UNIT_NAME': SAMPLE_TILESET_ID})
+			updateParameters(project_folder + "input.dat", {'PUNAME': 'pu.dat','SPECNAME': 'spec.dat','PUVSPRNAME': 'puvspr.dat','BOUNDNAME': 'bound.dat','PLANNING_UNIT_NAME': SAMPLE_TILESET_ID})
 
 			#update the user.dat file with information from the POST request
 			updateParameters(user_folder + "user.dat", {'NAME': data.name,'EMAIL': data.email,'PASSWORD': data.password,'MAPBOXACCESSTOKEN': data.mapboxaccesstoken})
@@ -837,7 +855,7 @@ class getUser():
 		try:
 			log("getUser",1)
 			#initialise the request objects
-			user_folder, scenario_folder, input_folder, output_folder, response, params = initialiseGetRequest(web.ctx.query[1:])
+			user_folder, project_folder, input_folder, output_folder, response, params = initialiseGetRequest(web.ctx.query[1:])
 			
 			#error checking
 			if "USER" not in params.keys():
@@ -872,7 +890,7 @@ class updateUser:
 				raise MarxanServicesError("No user parameter") 
 				
 			#get the appropriate folders
-			user_folder, scenario_folder, input_folder, output_folder = initialisePostRequest(data)
+			user_folder, project_folder, input_folder, output_folder = initialisePostRequest(data)
 			
 			#set the parameters in the user.dat file
 			updateParameters(user_folder + "user.dat", data)
@@ -886,16 +904,16 @@ class updateUser:
 		finally:
 			return getResponse({}, response)
 
-#list scenarios for the specific user
-	#https://db-server-blishten.c9users.io/marxan/webAPI2.py/listScenarios?user=andrew&callback=__jp2
-class listScenarios():
+#list projects for the specific user
+	#https://db-server-blishten.c9users.io/marxan/webAPI2.py/listProjects?user=andrew&callback=__jp2
+class listProjects():
 	def GET(self):
 		try:
-			log("listScenarios",1)
+			log("listProjects",1)
 			#initialise the request objects
-			user_folder, scenario_folder, input_folder, output_folder, response, params = initialiseGetRequest(web.ctx.query[1:])
-			scenarios = getScenarios(params["USER"])
-			response.update({'scenarios':scenarios})
+			user_folder, project_folder, input_folder, output_folder, response, params = initialiseGetRequest(web.ctx.query[1:])
+			projects = getProjects(params["USER"])
+			response.update({'projects':projects})
 
 		except (MarxanServicesError) as e:
 			response.update({'error': e.message})
@@ -903,27 +921,27 @@ class listScenarios():
 		finally:
 			return getResponse(params, response)
 		  
-#loads all of the data for the scenario and returns the files and the run parameters as separate arrays
-	#https://db-server-blishten.c9users.io/marxan/webAPI.py/pollResults?user=andrew&scenario=Tonga%20marine%20new&numreps=10&checkForExistingRun=true&callback=__jp13
-class getScenario():
+#loads all of the data for the project and returns the files and the run parameters as separate arrays
+	#https://db-server-blishten.c9users.io/marxan/webAPI.py/pollResults?user=andrew&project=Tonga%20marine%20new&numreps=10&checkForExistingRun=true&callback=__jp13
+class getProject():
 	def GET(self):
 		try:
-			log("getScenario",1)
+			log("getProject",1)
 			#get a connection to the database
 			conn = psycopg2.connect("dbname='biopama' host='localhost' user='jrc' password='thargal88'")
 			
 			#initialise the request objects
-			user_folder, scenario_folder, input_folder, output_folder, response, params = initialiseGetRequest(web.ctx.query[1:])
-			checkScenarioExists(scenario_folder)                
+			user_folder, project_folder, input_folder, output_folder, response, params = initialiseGetRequest(web.ctx.query[1:])
+			checkProjectExists(project_folder)                
 
-			#open the input.dat file to get all of the scenario files, parameters and metadata
-			files, runParams, metadata, renderer = getInputParameters(scenario_folder + "input.dat")
+			#open the input.dat file to get all of the project files, parameters and metadata
+			files, runParams, metadata, renderer = getInputParameters(project_folder + "input.dat")
 			
-			#get the interest features for this scenario 
-			features = json.loads(_getInterestFeaturesForScenario(scenario_folder,input_folder, True).to_json(orient='records'))
+			#get the interest features for this project 
+			features = json.loads(_getInterestFeaturesForProject(project_folder,input_folder, True).to_json(orient='records'))
 			
 			#get all the interest features - these will be returned even for marxan desktop databases which have no records in the metadata_interest_features table
-			df = pandas.read_sql_query("SELECT oid::integer as id, creation_date, feature_class_name, alias, _area area, description FROM marxan.metadata_interest_features order by alias;", con=conn)
+			df = pandas.read_sql_query("SELECT oid::integer as id, creation_date::text, feature_class_name, alias, _area area, description FROM marxan.metadata_interest_features order by alias;", con=conn)
 			allfeatures = json.loads(df.to_json(orient='records'))
 
 			#get the feature preprocessing state
@@ -940,10 +958,10 @@ class getScenario():
 			protected_area_intersections = _getPAIntersections(input_folder)
 			
 			#set the response
-			response.update({'scenario': params['SCENARIO'],'metadata': metadata, 'files': files, 'runParameters': runParams, 'renderer': renderer, 'features': features, 'allFeatures': allfeatures, 'feature_preprocessing': preprocessing, 'planning_units': pu_data, 'protected_area_intersections': protected_area_intersections})
+			response.update({'project': params['PROJECT'],'metadata': metadata, 'files': files, 'runParameters': runParams, 'renderer': renderer, 'features': features, 'allFeatures': allfeatures, 'feature_preprocessing': preprocessing, 'planning_units': pu_data, 'protected_area_intersections': protected_area_intersections})
 			
-			#set the users last scenario so it will load on login
-			updateParameters(user_folder + "user.dat", {'LASTSCENARIO': params['SCENARIO']})
+			#set the users last project so it will load on login
+			updateParameters(user_folder + "user.dat", {'LASTPROJECT': params['PROJECT']})
 
 		except (DatabaseError, MarxanServicesError) as e:
 			response.update({'error': repr(e)})
@@ -952,18 +970,18 @@ class getScenario():
 			conn.close()
 			return getResponse(params, response)
 
-#creates a new scenario in the users folder - currently used when importing an existing marxan project
-	#https://db-server-blishten.c9users.io/marxan/webAPI2.py/createScenario?user=andrew&scenario=test2&description=Groovy%20description&callback=__jp2
-class createScenario():
+#creates a new project in the users folder - currently used when importing an existing marxan project
+	#https://db-server-blishten.c9users.io/marxan/webAPI2.py/createProject?user=andrew&project=test2&description=Groovy%20description&callback=__jp2
+class createProject():
 	def GET(self):
 		try:
-			log("createScenario",1)
+			log("createProject",1)
 			#initialise the request objects
-			user_folder, scenario_folder, input_folder, output_folder, response, params = initialiseGetRequest(web.ctx.query[1:])
+			user_folder, project_folder, input_folder, output_folder, response, params = initialiseGetRequest(web.ctx.query[1:])
 
-			#check the scenario doesnt already exist
-			if (os.path.exists(scenario_folder)):
-				raise MarxanServicesError("Scenario '" + params["SCENARIO"] + "' already exists") 
+			#check the project doesnt already exist
+			if (os.path.exists(project_folder)):
+				raise MarxanServicesError("Project '" + params["PROJECT"] + "' already exists") 
 
 			#get the description
 			if "DESCRIPTION" in params.keys():
@@ -971,11 +989,11 @@ class createScenario():
 			else:
 				description = "No description"
 
-			#create the folders for the scenario and copy the input.dat file
-			createEmptyScenario(input_folder, output_folder,scenario_folder, description)
+			#create the folders for the project and copy the input.dat file
+			createEmptyProject(input_folder, output_folder,project_folder, description)
 
 			#set the response
-			response.update({'info': "Scenario '" + params["SCENARIO"] + "' created", 'name': params["SCENARIO"], 'description': description})
+			response.update({'info': "Project '" + params["PROJECT"] + "' created", 'name': params["PROJECT"], 'description': description})
 
 		except (MarxanServicesError) as e:
 			response.update({'error': e.message})
@@ -983,29 +1001,29 @@ class createScenario():
 		finally:
 			return getResponse(params, response)
 		
-#clones the scenario
-	#https://db-server-blishten.c9users.io/marxan/webAPI.py/cloneScenario?user=andrew&scenario=Tonga%20marine&callback=__jp2
-class cloneScenario():
+#clones the project
+	#https://db-server-blishten.c9users.io/marxan/webAPI.py/cloneProject?user=andrew&project=Tonga%20marine&callback=__jp2
+class cloneProject():
 	def GET(self):
 		try:
-			log("cloneScenario",1)
+			log("cloneProject",1)
 			#initialise the request objects
-			user_folder, scenario_folder, input_folder, output_folder, response, params = initialiseGetRequest(web.ctx.query[1:])
+			user_folder, project_folder, input_folder, output_folder, response, params = initialiseGetRequest(web.ctx.query[1:])
 			
-			#get the new scenario folder
-			new_scenario_folder = scenario_folder
+			#get the new project folder
+			new_project_folder = project_folder
 			#recursively check that the folder does not exist until we get a new folder that doesnt exist
-			while (os.path.exists(new_scenario_folder)):
-			    new_scenario_folder = new_scenario_folder[:-1] + "_copy/"
+			while (os.path.exists(new_project_folder)):
+			    new_project_folder = new_project_folder[:-1] + "_copy/"
 			
-			#copy the scenario
-			shutil.copytree(scenario_folder, new_scenario_folder)
+			#copy the project
+			shutil.copytree(project_folder, new_project_folder)
 			
 			#update the description and create date
-			updateParameters(new_scenario_folder + "input.dat", {'DESCRIPTION': "Copy of " + params['SCENARIO'] ,  'CREATEDATE': datetime.datetime.now().strftime("%a, %d %b %Y %H:%M:%S")})
+			updateParameters(new_project_folder + "input.dat", {'DESCRIPTION': "Copy of " + params['PROJECT'] ,  'CREATEDATE': datetime.datetime.now().strftime("%a, %d %b %Y %H:%M:%S")})
 			
 			#set the response
-			response.update({'info': "Scenario '" + new_scenario_folder[:-1].split("/")[-1] + "' created", 'name': new_scenario_folder[:-1].split("/")[-1]})
+			response.update({'info': "Project '" + new_project_folder[:-1].split("/")[-1] + "' created", 'name': new_project_folder[:-1].split("/")[-1]})
 
 		except (MarxanServicesError) as e:
 			response.update({'error': e.message})
@@ -1013,24 +1031,24 @@ class cloneScenario():
 		finally:
 			return getResponse(params, response)
 		
-#deletes the named scenario in the users folder
-	#https://db-server-blishten.c9users.io/marxan/webAPI2.py/deleteScenario?user=andrew&scenario=test2&callback=__jp2
-class deleteScenario():
+#deletes the named project in the users folder
+	#https://db-server-blishten.c9users.io/marxan/webAPI2.py/deleteProject?user=andrew&project=test2&callback=__jp2
+class deleteProject():
 	def GET(self):
 		try:
-			log("deleteScenario",1)
+			log("deleteProject",1)
 			#initialise the request objects
-			user_folder, scenario_folder, input_folder, output_folder, response, params = initialiseGetRequest(web.ctx.query[1:])
-			checkScenarioExists(scenario_folder)                
+			user_folder, project_folder, input_folder, output_folder, response, params = initialiseGetRequest(web.ctx.query[1:])
+			checkProjectExists(project_folder)                
 
-			#get the scenarios
-			scenarios = getScenarios(params["USER"])
-			if len(scenarios) == 1:
-				raise MarxanServicesError("You cannot delete all scenarios")     
+			#get the projects
+			projects = getProjects(params["USER"])
+			if len(projects) == 1:
+				raise MarxanServicesError("You cannot delete all projects")     
 			#delete the folder and all of its contents
-			shutil.rmtree(scenario_folder)
+			shutil.rmtree(project_folder)
 			#set the response
-			response.update({'info': "Scenario '" + params["SCENARIO"] + "' deleted", 'scenario': params["SCENARIO"]})
+			response.update({'info': "Project '" + params["PROJECT"] + "' deleted", 'project': params["PROJECT"]})
 
 		except (MarxanServicesError) as e:
 			response.update({'error': e.message})
@@ -1038,27 +1056,27 @@ class deleteScenario():
 		finally:
 			return getResponse(params, response)
 
-#https://db-server-blishten.c9users.io/marxan/webAPI2.py/renameScenario?user=asd&scenario=wibble&newName=wibble2&callback=__jp2
-class renameScenario():
+#https://db-server-blishten.c9users.io/marxan/webAPI2.py/renameProject?user=asd&project=wibble&newName=wibble2&callback=__jp2
+class renameProject():
 	def GET(self):
 		try:
-			log("renameScenario",1)
+			log("renameProject",1)
 			#initialise the request objects
-			user_folder, scenario_folder, input_folder, output_folder, response, params = initialiseGetRequest(web.ctx.query[1:])
-			checkScenarioExists(scenario_folder)                
+			user_folder, project_folder, input_folder, output_folder, response, params = initialiseGetRequest(web.ctx.query[1:])
+			checkProjectExists(project_folder)                
 			
 			#error checking
 			if params["NEWNAME"] == "":
 				raise MarxanServicesError("No name specified")     
 
 			#rename the folder
-			os.rename(scenario_folder, user_folder + params["NEWNAME"])
+			os.rename(project_folder, user_folder + params["NEWNAME"])
 
 			#add the other items to the response
-			response.update({"info": "Scenario renamed to '" + params["NEWNAME"] + "'", 'scenario':params["NEWNAME"]})
+			response.update({"info": "Project renamed to '" + params["NEWNAME"] + "'", 'project':params["NEWNAME"]})
 			
-			#set the new name as the users last scenario so it will load on login
-			updateParameters(user_folder + "user.dat", {'LASTSCENARIO': params['NEWNAME']})
+			#set the new name as the users last project so it will load on login
+			updateParameters(user_folder + "user.dat", {'LASTPROJECT': params['NEWNAME']})
 			
 		except (MarxanServicesError) as e:
 			response.update({'error': e.message})
@@ -1066,21 +1084,21 @@ class renameScenario():
 		finally:
 			return getResponse(params, response)
 
-#https://db-server-blishten.c9users.io/marxan/webAPI2.py/renameDescription?user=andrew&scenario=Sample%20scenario&newDesc=wibble2&callback=__jp2
+#https://db-server-blishten.c9users.io/marxan/webAPI2.py/renameDescription?user=andrew&project=Sample%20project&newDesc=wibble2&callback=__jp2
 class renameDescription():
 	def GET(self):
 		try:
 			log("renameDescription",1)
 			#initialise the request objects
-			user_folder, scenario_folder, input_folder, output_folder, response, params = initialiseGetRequest(web.ctx.query[1:])
-			checkScenarioExists(scenario_folder)                
+			user_folder, project_folder, input_folder, output_folder, response, params = initialiseGetRequest(web.ctx.query[1:])
+			checkProjectExists(project_folder)                
 			
 			#error checking
 			if params["NEWDESC"] == "":
 				raise MarxanServicesError("No new description specified")     
 
 			#update the description
-			updateParameters(scenario_folder + "input.dat", {'DESCRIPTION': params["NEWDESC"]})
+			updateParameters(project_folder + "input.dat", {'DESCRIPTION': params["NEWDESC"]})
 			
 			#add the other items to the response
 			response.update({"info": "Description updated", 'description':params["NEWDESC"]})
@@ -1091,7 +1109,7 @@ class renameDescription():
 		finally:
 			return getResponse(params, response)
 
-#updates the run parameters for the passed user/scenario 
+#updates the run parameters for the passed user/project 
 class updateRunParams:
 	def POST(self):
 		try:
@@ -1102,14 +1120,14 @@ class updateRunParams:
 				raise MarxanServicesError("No user parameter") 
 				
 			#error check 
-			if "scenario" not in data.keys():
-				raise MarxanServicesError("No scenario parameter") 
+			if "project" not in data.keys():
+				raise MarxanServicesError("No project parameter") 
 				
 			#get the appropriate folders
-			user_folder, scenario_folder, input_folder, output_folder = initialisePostRequest(data)
+			user_folder, project_folder, input_folder, output_folder = initialisePostRequest(data)
 			
 			#set the parameters in the user.dat file
-			updateParameters(scenario_folder + "input.dat", data)
+			updateParameters(project_folder + "input.dat", data)
 			
 			# #write the response
 			response = {'info': "Run parameters saved"}
@@ -1121,18 +1139,18 @@ class updateRunParams:
 			return getResponse({}, response)
 
 #runs marxan 
-	#https://db-server-blishten.c9users.io/marxan/webAPI/runMarxan?user=asd2&scenario=Marxan%20default%20scenario&callback=__jp2
+	#https://db-server-blishten.c9users.io/marxan/webAPI/runMarxan?user=asd2&project=Marxan%20default%20project&callback=__jp2
 class runMarxan:
 	def GET(self):
 		try:
 			#initialise the logging
 			log("runMarxan",1)
 			#initialise the request objectIs
-			user_folder, scenario_folder, input_folder, output_folder, response, params = initialiseGetRequest(web.ctx.query[1:])
+			user_folder, project_folder, input_folder, output_folder, response, params = initialiseGetRequest(web.ctx.query[1:])
 			#update the run parameters in the input.dat file using the passed query parameters
-			updateParameters(scenario_folder + "input.dat", params)
-			#set the current folder to the scenario folder so files can be found in the input.dat file
-			os.chdir(scenario_folder) 
+			updateParameters(project_folder + "input.dat", params)
+			#set the current folder to the project folder so files can be found in the input.dat file
+			os.chdir(project_folder) 
 			#delete all of the current output files
 			deleteAllFiles(output_folder)
 			#run marxan 
@@ -1145,13 +1163,13 @@ class runMarxan:
 			return getResponse(params, response)
 
 #polls the server for the results of a marxan run and if complete returns the sum of solutions, summary info on all runs and the log
-	#https://db-server-blishten.c9users.io/marxan/webAPI.py/pollResults?user=andrew&scenario=Marxan%20default%20scenario&numreps=10&checkForExistingRun=true&callback=__jp16
+	#https://db-server-blishten.c9users.io/marxan/webAPI.py/pollResults?user=andrew&project=Marxan%20default%20project&numreps=10&checkForExistingRun=true&callback=__jp16
 class pollResults:
 	def GET(self):
 		try:
 			log("pollResults",1)
 			#initialise the request objects
-			user_folder, scenario_folder, input_folder, output_folder, response, params = initialiseGetRequest(web.ctx.query[1:])
+			user_folder, project_folder, input_folder, output_folder, response, params = initialiseGetRequest(web.ctx.query[1:])
 			if "NUMREPS" not in params.keys():
 				raise MarxanServicesError("No numreps parameter")
 			
@@ -1188,7 +1206,7 @@ class pollResults:
 					info = "Results loaded"
 				else:
 					info = "Run succeeded"
-				
+
 				#add the other items to the response
 				response.update({'info':info, 'log': logresults, 'mvbest': mvbest, 'sum':sum, 'ssoln': ssoln})
 		
@@ -1199,18 +1217,17 @@ class pollResults:
 		except (MarxanServicesError) as e:
 			response.update({'error': e.message})
 
-			
 		finally:
 			return getResponse(params, response)        
 
 #for loading each individual solutions data
-	#https://db-server-blishten.c9users.io/marxan/webAPI2.py/loadSolution?user=andrew&scenario=Sample%20scenaio&solution=1&callback=__jp2
+	#https://db-server-blishten.c9users.io/marxan/webAPI2.py/loadSolution?user=andrew&project=Sample%20scenaio&solution=1&callback=__jp2
 class loadSolution:
 	def GET(self):
 		try:
 			log("loadSolution",1)
 			#initialise the request objects
-			user_folder, scenario_folder, input_folder, output_folder, response, params = initialiseGetRequest(web.ctx.query[1:])
+			user_folder, project_folder, input_folder, output_folder, response, params = initialiseGetRequest(web.ctx.query[1:])
 			if "SOLUTION" not in params.keys():
 				raise MarxanServicesError("No solution parameter")
 				
@@ -1241,17 +1258,17 @@ class postFile:
 			# value         = the content of the file
 			# filename      = the filename of the uploaded file
 			# user          = the currently logged on user
-			# scenario      = the scenario name
+			# project      = the project name
 			data = web.input()
 
 			#get the appropriate folders
-			user_folder, scenario_folder, input_folder, output_folder = initialisePostRequest(data)
+			user_folder, project_folder, input_folder, output_folder = initialisePostRequest(data)
 			
 			#write the file to the input folder
 			writeFile(input_folder + data.filename, data.value)
 			
 			#set the parameter in the input.dat file
-			updateParameters(scenario_folder + "input.dat", {data.parameter: data.filename})
+			updateParameters(project_folder + "input.dat", {data.parameter: data.filename})
 			
 			#write the response
 			response = {'info': "File '" + data.filename + "' uploaded", 'file': data.filename}
@@ -1269,7 +1286,7 @@ class postFileWithFolder:
 			log("postFileWithFolder",1)
 			#there will be 2 variables in the data: 
 			# user			= the user who is uploading the file
-			# scenario		= the name of the scenario
+			# project		= the name of the project
 			# filename      = the filename of the uploaded file including a folder path
 			# value         = the content of the file
 			data = web.input()
@@ -1278,10 +1295,10 @@ class postFileWithFolder:
 			log("Input filename: " + data['filename'])
 			
 			#get the appropriate folders
-			user_folder, scenario_folder, input_folder, output_folder = initialisePostRequest(data)
+			user_folder, project_folder, input_folder, output_folder = initialisePostRequest(data)
 			
 			#get the path to the file
-			destFile = scenario_folder + data['filename']
+			destFile = project_folder + data['filename']
 			
 			log("Output filename: " + destFile)
 			
@@ -1376,9 +1393,9 @@ class importShapefile:
 				#the ogc_fid field that is produced is an autonumbering oid
 				if params['DISSOLVE']=='true':
 					#if we want to dissolve the shapefile, then produce a tmp feature class called undissolved in the marxan schema in the global equal area projection 3410
-					cmd = '/home/ubuntu/anaconda2/bin/ogr2ogr -f "PostgreSQL" PG:"host=localhost user=jrc dbname=biopama password=thargal88" /home/ubuntu/workspace/marxan/Marxan243/MarxanData_unix/' + shapefile + ' -nlt GEOMETRY -lco SCHEMA=marxan -nln undissolved -t_srs EPSG:3410'
+					cmd = '/home/ubuntu/miniconda2/bin/ogr2ogr -f "PostgreSQL" PG:"host=localhost user=jrc dbname=biopama password=thargal88" /home/ubuntu/workspace/marxan/Marxan243/MarxanData_unix/' + shapefile + ' -nlt GEOMETRY -lco SCHEMA=marxan -nln undissolved -t_srs EPSG:3410'
 				else:
-					cmd = '/home/ubuntu/anaconda2/bin/ogr2ogr -f "PostgreSQL" PG:"host=localhost user=jrc dbname=biopama password=thargal88" /home/ubuntu/workspace/marxan/Marxan243/MarxanData_unix/' + shapefile + ' -nlt GEOMETRY -lco SCHEMA=marxan'
+					cmd = '/home/ubuntu/miniconda2/bin/ogr2ogr -f "PostgreSQL" PG:"host=localhost user=jrc dbname=biopama password=thargal88" /home/ubuntu/workspace/marxan/Marxan243/MarxanData_unix/' + shapefile + ' -nlt GEOMETRY -lco SCHEMA=marxan'
 					
 				#run the import
 				log("Running command: " + cmd)
@@ -1433,22 +1450,22 @@ class importShapefile:
 			return getResponse(params, response)
 		
 #updates a parameter in the input.dat file directly, e.g. for updating the PLANNING_UNIT_NAME after the user sets their source spatial data
-	#https://db-server-blishten.c9users.io/marxan/webAPI2.py/updateParameter?user=andrew&scenario=Sample%20scenario&parameter=DESCRIPTION&value=wibble&callback=__jp2
+	#https://db-server-blishten.c9users.io/marxan/webAPI2.py/updateParameter?user=andrew&project=Sample%20project&parameter=DESCRIPTION&value=wibble&callback=__jp2
 class updateParameter:
 	def GET(self):
 		try:
 			log("updateParameter",1)
 			#initialise the request objects
-			user_folder, scenario_folder, input_folder, output_folder, response, params = initialiseGetRequest(web.ctx.query[1:])
+			user_folder, project_folder, input_folder, output_folder, response, params = initialiseGetRequest(web.ctx.query[1:])
 			if "USER" not in params.keys():
 				raise MarxanServicesError("No user parameter")
-			if "SCENARIO" not in params.keys():
-				raise MarxanServicesError("No scenario parameter")
+			if "PROJECT" not in params.keys():
+				raise MarxanServicesError("No project parameter")
 			if "PARAMETER" not in params.keys():
 				raise MarxanServicesError("No parameter name")
 			if "VALUE" not in params.keys():
 				raise MarxanServicesError("No parameter value")
-			updateParameters(scenario_folder + "input.dat", {params["PARAMETER"]: params["VALUE"]})
+			updateParameters(project_folder + "input.dat", {params["PARAMETER"]: params["VALUE"]})
 			response.update({'info': "Parameter updated"})
 			
 		except (MarxanServicesError) as e:
@@ -1469,7 +1486,7 @@ class getPlanningUnitGrids():
 			
 			conn = psycopg2.connect("dbname='biopama' host='localhost' user='jrc' password='thargal88'")
 			#get the planning unit grids
-			query = "SELECT feature_class_name ,alias ,description ,creation_date::text ,country_id ,aoi_id,domain,_area,ST_AsText(envelope) FROM marxan.metadata_planning_units order by 1;"
+			query = "SELECT feature_class_name ,alias ,description ,creation_date::text ,country_id ,aoi_id,domain,_area,ST_AsText(envelope) envelope FROM marxan.metadata_planning_units order by 1;"
 			
 			#get the intersection results
 			data = pandas.read_sql_query(query, con=conn).to_dict(orient="records")
@@ -1494,7 +1511,7 @@ class updatePlanningUnitStatuses:
 			status3_ids=[]
 			
 			#get the various folders
-			user_folder, scenario_folder, input_folder, output_folder = initialisePostRequest(data)
+			user_folder, project_folder, input_folder, output_folder = initialisePostRequest(data)
 
 			# get the status ids as lists
 			if "status1" in data.keys():
@@ -1518,14 +1535,14 @@ class updatePlanningUnitStatuses:
 		finally:
 			return getResponse({}, response)
 
-#https://db-server-blishten.c9users.io/marxan/webAPI.py/preprocessFeature?user=andrew&scenario=Tonga%20marine&planning_grid_name=pu_ton_marine_hexagons_50&feature_class_name=intersesting_habitat&id=63408405
+#https://db-server-blishten.c9users.io/marxan/webAPI.py/preprocessFeature?user=andrew&project=Tonga%20marine&planning_grid_name=pu_ton_marine_hexagons_50&feature_class_name=intersesting_habitat&id=63408405
 class preprocessFeature:
 	def GET(self):
 		try:
 			log("preprocessFeature",1)		
 			
 			#initialise the request objects
-			user_folder, scenario_folder, input_folder, output_folder, response, params = initialiseGetRequest(web.ctx.query[1:])
+			user_folder, project_folder, input_folder, output_folder, response, params = initialiseGetRequest(web.ctx.query[1:])
 			for key in ["PLANNING_GRID_NAME", "FEATURE_CLASS_NAME", "ID"]:
 				if key not in params.keys():
 					raise MarxanServicesError("No " + key.lower() + " parameter")
@@ -1540,8 +1557,6 @@ class preprocessFeature:
 			#get the interest features that already have records in the puvspr.dat file or an empty dataframe if the file does not exist
 			if (os.path.exists(input_folder + "puvspr.dat")):
 				existingData = pandas.read_csv(input_folder + "puvspr.dat")
-				#make sure there are not existing records for this feature - otherwise we will get duplicates
-				existingData = existingData[~existingData.species.isin([speciesId])]
 				
 			else:
 				# no file so create an empty data frame to hold the data for the puvspr.dat file
@@ -1550,7 +1565,8 @@ class preprocessFeature:
 				existingData = existingData[['species', 'pu', 'amount']] #reorder the columns
 
 			#do the intersection
-			oldVersion = getInputParameter(scenario_folder + 'input.dat',"OLDVERSION")
+			oldVersion = getInputParameter(project_folder + 'input.dat',"OLDVERSION")
+			
 			#see whether we are using an old version of marxan - in this case we cant do an intersection on spatial data, but the intersection will have already been done with the results already in the puvspr.dat file
 			if oldVersion == 'False':
 				
@@ -1567,6 +1583,8 @@ class preprocessFeature:
 
 					#append them to the existing data
 					if not intersectionData.empty:
+						#make sure there are not existing records for this feature - otherwise we will get duplicates
+						existingData = existingData[~existingData.species.isin([speciesId])]
 						existingData = existingData.append(intersectionData)
 
 					#write the results to the puvspr.dat file
@@ -1577,7 +1595,7 @@ class preprocessFeature:
 				
 				finally:
 					conn.close() 
-			
+					
 			#get the count of intersecting planning units
 			pu_count = existingData[existingData.species.isin([speciesId])].agg({'pu' : ['count']})['pu'].iloc[0]
 			
@@ -1589,7 +1607,7 @@ class preprocessFeature:
 			_writeToDatFile(input_folder + FEATURE_PREPROCESSING_FILENAME, row)
 
 			#update the input.dat file
-			updateParameters(scenario_folder + "input.dat", {'PUVSPRNAME': 'puvspr.dat'})
+			updateParameters(project_folder + "input.dat", {'PUVSPRNAME': 'puvspr.dat'})
 			#set the response
 			response.update({'info': "Feature " + params['FEATURE_CLASS_NAME'] + " preprocessed", "feature_class_name": params['FEATURE_CLASS_NAME'], "pu_area" : str(pu_area),"pu_count" : str(pu_count), "id":str(speciesId)})
 			
@@ -1599,48 +1617,52 @@ class preprocessFeature:
 		finally:
 			return getResponse(params, response)
 
-#creates a new scenario in the users folder using input from the marxan web wizard
-	#https://db-server-blishten.c9users.io/marxan/webAPI.py/createScenarioFromWizard?user=asd&scenario=test&description=whatever&planning_grid_name=pu_asm_terrestrial_hexagons_10
-class createScenarioFromWizard():
+#creates a new project in the users folder using input from the marxan web wizard
+	#https://db-server-blishten.c9users.io/marxan/webAPI.py/createProjectFromWizard?user=asd&project=test&description=whatever&planning_grid_name=pu_asm_terrestrial_hexagons_10
+class createProjectFromWizard():
 	def POST(self):
 		try:
-			log("createScenarioFromWizard",1)			
+			log("createProjectFromWizard",1)			
 			#get the data from the POST request
 			data = web.input()
 			response={}
 
 			#error checking
-			for key in ["user", "scenario", "description", "planning_grid_name","interest_features","target_values","spf_values"]:
+			for key in ["user", "project", "description", "planning_grid_name","interest_features","target_values","spf_values"]:
 				if key not in data.keys():
 					raise MarxanServicesError("No " + key + " parameter")
 
 			#get the various folders
-			user_folder, scenario_folder, input_folder, output_folder = initialisePostRequest(data)
+			user_folder, project_folder, input_folder, output_folder = initialisePostRequest(data)
 						
-			#check the scenario doesnt already exist
-			log("Creating new scenario " + data["scenario"] + " in folder " + scenario_folder)
-			if (os.path.exists(scenario_folder)):
-				raise MarxanServicesError("Scenario '" + data["scenario"] + "' already exists") 
+			#check the project doesnt already exist
+			log("Creating new project " + data["project"] + " in folder " + project_folder)
+			if (os.path.exists(project_folder)):
+				raise MarxanServicesError("Project '" + data["project"] + "' already exists") 
 
-			#create the folders for the scenario and copy the input.dat file
-			createEmptyScenario(input_folder, output_folder, scenario_folder, data['description'])
-			log("Empty scenario created")
+			#create the folders for the project and copy the input.dat file
+			createEmptyProject(input_folder, output_folder, project_folder, data['description'])
+			log("Empty project created")
 			
 			#write the planning_grid_name into the input.dat file
 			log("planning_grid_name will be " + data['planning_grid_name'])
-			updateParameters(scenario_folder + "input.dat", {'PLANNING_UNIT_NAME': data['planning_grid_name']})
+			updateParameters(project_folder + "input.dat", {'PLANNING_UNIT_NAME': data['planning_grid_name']})
 			
 			# create the pu.dat file
-			_createPUdatafile(scenario_folder, input_folder, data["planning_grid_name"])
+			_createPUdatafile(project_folder, input_folder, data["planning_grid_name"])
 
 			# update the spec.dat file
-			_updateSPECdatafile(scenario_folder, input_folder, data["interest_features"], data["target_values"], data['spf_values'])
+			_updateSPECdatafile(project_folder, input_folder, data["interest_features"], data["target_values"], data['spf_values'])
 
-			# #set the response
-			response.update({'info': "Scenario '" + data["scenario"] + "' created", 'name': data["scenario"]})
+			# set the response
+			response.update({'info': "Project '" + data["project"] + "' created", 'name': data["project"]})
 
 		except (MarxanServicesError) as e:
 			response.update({'error': e.message})
+			
+		except (Exception) as e:
+			response.update({'error': repr(e)})
+			
 
 		finally:
 			return getResponse({}, response)
@@ -1655,15 +1677,15 @@ class updateSpecFile():
 			response={}
 
 			#error checking
-			for key in ["user", "scenario", "interest_features","target_values","spf_values"]:
+			for key in ["user", "project", "interest_features","target_values","spf_values"]:
 				if key not in data.keys():
 					raise MarxanServicesError("No " + key + " parameter")
 
 			#get the various folders
-			user_folder, scenario_folder, input_folder, output_folder = initialisePostRequest(data)
+			user_folder, project_folder, input_folder, output_folder = initialisePostRequest(data)
 			
 			# update the spec.dat file
-			_updateSPECdatafile(scenario_folder, input_folder, data["interest_features"], data["target_values"], data['spf_values'])
+			_updateSPECdatafile(project_folder, input_folder, data["interest_features"], data["target_values"], data['spf_values'])
 
 			# #set the response
 			response.update({'info': "spec.dat file updated"})
@@ -1720,15 +1742,15 @@ class deleteInterestFeature:
 			return getResponse(params, response)
 
 #does the intersection between the passed grid and the countries protected areas (with iucn categories)
-#https://db-server-blishten.c9users.io/marxan/webAPI.py/getPAIntersections?user=andrew&scenario=Tonga%20marine%20new&planning_grid_name=pu_ton_marine_hexagons_50
+#https://db-server-blishten.c9users.io/marxan/webAPI.py/getPAIntersections?user=andrew&project=Tonga%20marine%20new&planning_grid_name=pu_ton_marine_hexagons_50
 class getPAIntersections():
 	def GET(self):
 		log("getPAIntersections",1)			
 		#initialise the request objects
-		user_folder, scenario_folder, input_folder, output_folder, response, params = initialiseGetRequest(web.ctx.query[1:])
+		user_folder, project_folder, input_folder, output_folder, response, params = initialiseGetRequest(web.ctx.query[1:])
 
 		#error checking
-		for key in ["USER", "SCENARIO", "PLANNING_GRID_NAME"]:
+		for key in ["USER", "PROJECT", "PLANNING_GRID_NAME"]:
 			if key not in params.keys():
 				raise MarxanServicesError("No " + key + " parameter")
 
