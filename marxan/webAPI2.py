@@ -47,12 +47,15 @@ urls = (
   "/importShapefile","importShapefile",
   "/updateParameter","updateParameter",
   "/uploadTilesetToMapBox","uploadTilesetToMapBox",
+  "/getInterestFeatures","getInterestFeatures",
   "/deleteInterestFeature","deleteInterestFeature",
   "/updateSpecFile","updateSpecFile",
   "/preprocessFeature","preprocessFeature",
   "/getPlanningUnitGrids","getPlanningUnitGrids",
+  "/createPlanningUnitGrid","createPlanningUnitGrid",
   "/updatePlanningUnitStatuses","updatePlanningUnitStatuses",
-  "/getPAIntersections","getPAIntersections"
+  "/getPAIntersections","getPAIntersections",
+  "/getCountries","getCountries"
   )
 
 def log(message, messageType=0):
@@ -617,6 +620,61 @@ def _getPAIntersections(input_folder):
 
 	else:
 		return None
+
+#https://db-server-blishten.c9users.io/marxan/webAPI2.py/getCountries?callback=__jp2
+class getCountries():
+	def GET(self):
+		try:
+			log("getCountries",1)
+			#get a connection to the database
+			conn = psycopg2.connect("dbname='biopama' host='localhost' user='jrc' password='thargal88'")
+			
+			#initialise the request objects
+			params = getQueryStringParams(web.ctx.query[1:])
+			response = {}
+			
+			#get all the countries
+			df = pandas.read_sql_query("SELECT iso3, original_n FROM marxan.gaul_2015_simplified_1km where original_n not like '%|%' and iso3 not like '%|%' order by 2;", con=conn)
+			countries = json.loads(df.to_json(orient='records'))
+
+			#set the response
+			response.update({'records': countries})
+			
+		except (DatabaseError, MarxanServicesError) as e:
+			response.update({'error': repr(e)})
+
+		finally:
+			conn.close()
+			return getResponse(params, response)
+
+#https://db-server-blishten.c9users.io/marxan/webAPI2.py/getInterestFeatures?callback=__jp2
+class getInterestFeatures():
+	def GET(self):
+		try:
+			log("getCountries",1)
+			#get a connection to the database
+			conn = psycopg2.connect("dbname='biopama' host='localhost' user='jrc' password='thargal88'")
+			
+			#initialise the request objects
+			params = getQueryStringParams(web.ctx.query[1:])
+			response = {}
+			
+			#connect to the db
+			conn = psycopg2.connect("dbname='biopama' host='localhost' user='jrc' password='thargal88'")
+			
+			#get the values from the marxan.metadata_interest_features table using the get_interest_features function
+			df = pandas.read_sql_query('select * from marxan.get_interest_features()',con=conn)   
+			interestFeatures = json.loads(df.to_json(orient='records'))
+			
+			#set the response
+			response.update({'records': interestFeatures})
+			
+		except (DatabaseError, MarxanServicesError) as e:
+			response.update({'error': repr(e)})
+
+		finally:
+			conn.close()
+			return getResponse(params, response)
 
 ##############################################################################################################################################################################################################################################
 #################  MapBox routines
@@ -1496,6 +1554,37 @@ class getPlanningUnitGrids():
 			raise MarxanServicesError("Error creating puvspr.dat file: " + e.message + ". Error type: " + str(sys.exc_info()[0]))
 		
 		finally:
+			conn.close() 
+			return getResponse(params, response)
+
+#creates a new planning unit grid
+#https://db-server-blishten.c9users.io/marxan/webAPI2.py/createPlanningUnitGrid?iso3=AND&domain=Terrestrial&areakm2=50
+class createPlanningUnitGrid():
+	def GET(self):
+		try:
+			log("createPlanningUnitGrid",1)			
+			#initialise the request objects
+			response = {}
+			params = params = getQueryStringParams(web.ctx.query[1:])
+			
+			#connect to the database
+			conn = psycopg2.connect("dbname='biopama' host='localhost' user='jrc' password='thargal88'")
+			cur = conn.cursor()
+			
+			#get the planning unit grids
+			query = "SELECT * FROM marxan.hexagons(" + params['AREAKM2'] + ",'" + params['ISO3'] + "','" + params['DOMAIN'] + "');"
+			cur.execute(query)
+			data = cur.fetchone()
+			
+			#get the results
+			response.update({'info':'Planning unit grid created', 'planning_unit_grid': data[0]})
+		
+		except (DatabaseError, psycopg2.InternalError, psycopg2.IntegrityError) as e: #postgis error
+			response.update({'error': e.message})
+		
+		finally:
+			cur.close()
+			conn.commit()			
 			conn.close() 
 			return getResponse(params, response)
 
