@@ -23,7 +23,7 @@ FEATURE_PREPROCESSING_FILENAME = "feature_preprocessing.dat"
 PROTECTED_AREA_INTERSECTIONS_FILENAME = "protected_area_intersections.dat"
 
 urls = (
-  "/listUsers", "listUsers",
+  "/listUsers", "listUsers", #no longer used
   "/createUser", "createUser",
   "/validateUser","validateUser",
   "/resendPassword","resendPassword",

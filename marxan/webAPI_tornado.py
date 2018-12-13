@@ -1,3 +1,4 @@
+from tornado import gen
 import tornado.ioloop
 import tornado.web
 import tornado.websocket
@@ -10,6 +11,9 @@ import os
 import re
 import traceback
 import glob
+import time
+import datetime
+import select
 
 ####################################################################################################################################################################################################################################################################
 ## constant declarations
@@ -24,6 +28,8 @@ OUTPUT_SUM_FILENAME = "output_sum.txt"
 SUMMED_SOLUTION_FILENAME = "output_ssoln.txt"
 FEATURE_PREPROCESSING_FILENAME = "feature_preprocessing.dat"
 PROTECTED_AREA_INTERSECTIONS_FILENAME = "protected_area_intersections.dat"
+# WEB_SOCKET_MESSAGE_PREFIX = "Message from Marxan-Server: "
+WEB_SOCKET_MESSAGE_PREFIX = ""
 
 ####################################################################################################################################################################################################################################################################
 ## generic functions
@@ -37,8 +43,6 @@ def readFile(filename):
 
 #returns all the keys from a set of KEY/VALUE pairs in a string expression
 def getKeys(s):
-    #instantiate the return arrays
-    keys = []
     #get all the parameter keys
     matches = re.findall('\\n[A-Z1-9_]{2,}', s, re.DOTALL)
     return [m[1:] for m in matches]
@@ -106,20 +110,14 @@ class PostGIS():
         self.connection.close()
     
 ####################################################################################################################################################################################################################################################################
-## generic baseclass for handling all requests
-####################################################################################################################################################################################################################################################################
-
-class MarxanHandler(tornado.web.RequestHandler):
-    #to prevent CORS errors in the client
-    def set_default_headers(self):
-        self.set_header("Access-Control-Allow-Origin", "*")
-    pass
-
-####################################################################################################################################################################################################################################################################
 ## baseclass for handling REST requests
 ####################################################################################################################################################################################################################################################################
 
-class MarxanRESTHandler(MarxanHandler):
+class MarxanRESTHandler(tornado.web.RequestHandler):
+    #to prevent CORS errors in the client
+    def set_default_headers(self):
+        self.set_header("Access-Control-Allow-Origin", "*")
+
     #called before the request is processed 
     def prepare(self):
         try:
@@ -577,20 +575,93 @@ class updateSpecFile(MarxanRESTHandler):
         #set the response
         self.response.update({'info': "spec.dat file updated"})
         self.write_response()
-        
-class EchoWebSocket(tornado.websocket.WebSocketHandler):
-    def open(self):
-        print("WebSocket opened")
-    
-    #to avoid CORS issues
+
+####################################################################################################################################################################################################################################################################
+## baseclass for handling WebSockets
+####################################################################################################################################################################################################################################################################
+
+class MarxanWebSocketHandler(tornado.websocket.WebSocketHandler):
+    #to prevent CORS errors in the client
     def check_origin(self, origin):
         return True
-    
-    def on_message(self, message):
-        self.write_message(u"You said: " + message)
 
+    #output to the log any WebSocket messages received
+    def on_message(self, message):
+        print "Message received: " + message + " at " +  datetime.datetime.now().strftime("%H:%M:%S on %d/%m/%Y")
+    
+    #output to the log 
+    def open(self):
+        print "WebSocket opened at " + datetime.datetime.now().strftime("%H:%M:%S on %d/%m/%Y")
+    
+    #output to the log 
     def on_close(self):
-        print("WebSocket closed")
+        print "WebSocket closed at " + datetime.datetime.now().strftime("%H:%M:%S on %d/%m/%Y")
+        
+    #creates the full websocket response as a dictionary
+    def createResponse(self, message, isError = False):
+        message = WEB_SOCKET_MESSAGE_PREFIX + message
+        if (isError):
+            itemName = 'error'
+        else:
+            itemName = 'info'
+        return {itemName: message, 'timestamp': datetime.datetime.now().strftime("%H:%M:%S on %d/%m/%Y")}
+
+####################################################################################################################################################################################################################################################################
+## baseclass for handling long-running PostGIS queries
+####################################################################################################################################################################################################################################################################
+
+class QueryWebSocketHandler(MarxanWebSocketHandler):
+    
+    #required for asyncronous queries
+    def wait(self, conn):
+        while 1:
+            state = conn.poll()
+            if state == psycopg2.extensions.POLL_OK:
+                break
+            elif state == psycopg2.extensions.POLL_WRITE:
+                select.select([], [conn.fileno()], [])
+            elif state == psycopg2.extensions.POLL_READ:
+                select.select([conn.fileno()], [], [])
+            else:
+                raise psycopg2.OperationalError("poll() returned %s" % state)
+                
+    @gen.coroutine
+    def runQuery(self, sql):
+        try:
+            self.write_message(self.createResponse("Started PostGIS query"))
+            #connect to postgis asyncronously
+            conn = psycopg2.connect("dbname='biopama' host='localhost' user='jrc' password='thargal88'", async=1)
+            #wait for the connection to be ready
+            self.wait(conn)
+            #get a curson
+            cur = conn.cursor()
+            #execute the query
+            cur.execute(sql)
+            #poll to get the state of the query
+            state = conn.poll()
+            #poll at regular intervals to see if the query has finished
+            while (state != psycopg2.extensions.POLL_OK):
+                yield gen.sleep(1)
+                state = conn.poll()
+                self.write_message(self.createResponse("Still processing"))
+        except (psycopg2.Error) as e:
+            print e.pgerror
+            self.write_message(self.createResponse(e.pgerror, True))
+        finally:
+            cur.close()
+            conn.close()
+            self.write_message(self.createResponse("Finished PostGIS query"))
+            self.close()
+
+####################################################################################################################################################################################################################################################################
+## WebSocket subclasses
+####################################################################################################################################################################################################################################################################
+
+class startRun(QueryWebSocketHandler):
+
+    def open(self):
+        super(startRun, self).open()
+        self.runQuery("select * from marxan.get_pu_areas_for_interest_feature('pu_png_marine_hexagons_50','seagrasses_pacific');")
         
 ####################################################################################################################################################################################################################################################################
 ## tornado functions
@@ -614,7 +685,7 @@ def make_app():
         ("/marxan-server/getResults", getResults),
         ("/marxan-server/getProjects", getProjects),
         ("/marxan-server/updateSpecFile", updateSpecFile),
-        ("/marxan-server/EchoWebSocket", EchoWebSocket),
+        ("/marxan-server/startRun", startRun),
     ])
 
 if __name__ == "__main__":
