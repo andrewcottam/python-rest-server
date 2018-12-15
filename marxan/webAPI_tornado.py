@@ -1,5 +1,8 @@
-from tornado import gen
+from tornado.iostream import StreamClosedError
+from tornado.process import Subprocess
+from tornado.ioloop import IOLoop
 from tornado import concurrent
+from tornado import gen
 import tornado.ioloop
 import tornado.web
 import tornado.websocket
@@ -15,6 +18,8 @@ import glob
 import time
 import datetime
 import select
+import subprocess
+import sys
 
 ####################################################################################################################################################################################################################################################################
 ## constant declarations
@@ -28,6 +33,7 @@ OUTPUT_SUM_FILENAME = "output_sum.txt"
 SUMMED_SOLUTION_FILENAME = "output_ssoln.txt"
 FEATURE_PREPROCESSING_FILENAME = "feature_preprocessing.dat"
 PROTECTED_AREA_INTERSECTIONS_FILENAME = "protected_area_intersections.dat"
+MARXAN_EXECUTABLE = MARXAN_FOLDER + "MarOpt_v243_Linux64"
 
 ####################################################################################################################################################################################################################################################################
 ## generic functions that dont belong to a class so can be called by subclasses of tornado.web.RequestHandler and tornado.websocket.WebSocketHandler equally - underscores are used so they dont mask the equivalent endpoints
@@ -260,18 +266,18 @@ def _writeCSV(obj, fileToWrite, df, writeIndex = False):
 
 #writes the dataframe to the file - for files not managed in the input.dat file
 def _writeToDatFile(file, dataframe):
-	#see if the file exists
-	if (os.path.exists(file)):
-		#read the current data
-		df = pandas.read_csv(file)
-	else:
-		#create the new dataframe
-		df = pandas.DataFrame()
-	#append the new records
-	df = df.append(dataframe)
-	#write the file
-	df.to_csv(file, index=False)
-	
+    #see if the file exists
+    if (os.path.exists(file)):
+        #read the current data
+        df = pandas.read_csv(file)
+    else:
+        #create the new dataframe
+        df = pandas.DataFrame()
+    #append the new records
+    df = df.append(dataframe)
+    #write the file
+    df.to_csv(file, index=False)
+    
 #gets a files contents as a string
 def _readFile(filename):
     f = open(filename)
@@ -280,35 +286,41 @@ def _readFile(filename):
     return s
 
 def _writeFile(filename, data):
-	f = open(filename, 'wb')
-	f.write(data)
-	f.close()
-	
+    f = open(filename, 'wb')
+    f.write(data)
+    f.close()
+    
+#deletes all of the files in the passed folder
+def _deleteAllFiles(folder):
+	files = glob.glob(folder + "*")
+	for f in files:
+		os.remove(f)
+
 #updates the parameters in the *.dat file with the new parameters passed as a dict
 def _updateParameters(data_file, newParams):
-	if newParams:
-		#get the existing parameters 
-		s = _readFile(data_file)
-		#update any that are passed in as query params
-		for k, v in newParams.iteritems():
-			try:
-				p1 = s.index(k) #get the first position of the parameter
-				if p1>-1:
-					p2 = _getEndOfLine(s[p1:]) #get the position of the end of line
-					s = s[:p1] + k + " " + v + s[(p1 + p2):]
-				#write these parameters back to the *.dat file
-				_writeFile(data_file, s)
-			except ValueError:
-				continue
-	return 
+    if newParams:
+        #get the existing parameters 
+        s = _readFile(data_file)
+        #update any that are passed in as query params
+        for k, v in newParams.iteritems():
+            try:
+                p1 = s.index(k) #get the first position of the parameter
+                if p1>-1:
+                    p2 = _getEndOfLine(s[p1:]) #get the position of the end of line
+                    s = s[:p1] + k + " " + v + s[(p1 + p2):]
+                #write these parameters back to the *.dat file
+                _writeFile(data_file, s)
+            except ValueError:
+                continue
+    return 
 
 #gets the position of the end of the line which may be different in windows/unix generated files
 def _getEndOfLine(text):
-	try:
-		p = text.index("\r\n") 
-	except (ValueError):
-		p = text.index("\n") 
-	return p
+    try:
+        p = text.index("\r\n") 
+    except (ValueError):
+        p = text.index("\n") 
+    return p
 
 #returns all the keys from a set of KEY/VALUE pairs in a string expression
 def _getKeys(s):
@@ -638,7 +650,7 @@ class MarxanWebSocketHandler(tornado.websocket.WebSocketHandler):
 
     #sends the message with a timestamp
     def send_response(self, message):
-        message.update({'timestamp': datetime.datetime.now().strftime("%H:%M:%S on %d/%m/%Y")})
+        message.update({'timestamp': datetime.datetime.now().strftime("%H:%M:%S.%f on %d/%m/%Y")})
         self.write_message(message)
 
 ####################################################################################################################################################################################################################################################################
@@ -749,7 +761,7 @@ class preprocessFeature(QueryWebSocketHandler):
         df = df[~df.species.isin([speciesId])]
         #append the intersection data to the existing data
         df = df.append(intersectionData)
-        try:
+        try: 
             #write the data to the PUVSPR.dat file
             _writeCSV(self, "PUVSPRNAME", df)
             #get the summary information and write it to the feature preprocessing file
@@ -767,6 +779,49 @@ class preprocessFeature(QueryWebSocketHandler):
         #set the response
         self.send_response({'info': "Feature " + self.get_argument('feature_class_name') + " preprocessed", "feature_class_name": self.get_argument('feature_class_name'), "pu_area" : str(pu_area),"pu_count" : str(pu_count), "id":str(speciesId)})
 
+#wss://db-server-blishten.c9users.io:8081/marxan-server/preprocessFeature?user=andrew&project=Tonga%20marine%2030km2&planning_grid_name=pu_ton_marine_hexagons_30&feature_class_name=volcano&id=63408475
+# class runMarxan(QueryWebSocketHandler):
+#     def open(self):
+#         #get the user folder and project folders
+#         super(runMarxan, self).open()
+#         try:    
+#             #set the current folder to the project folder so files can be found in the input.dat file
+#             os.chdir(self.folder_project)
+#             print self.folder_project
+#             #delete all of the current output files
+#             _deleteAllFiles(self.folder_output)
+#             #run marxan 
+#             self.send_response({'info': 'Marxan starting'})
+#             print 'Marxan starting'
+#             p = subprocess.call(MARXAN_EXECUTABLE, stdout=subprocess.PIPE) 
+#             print p
+#             print 'Marxan finished'
+#             self.send_response({'info': 'Marxan finished'})
+#         except:
+#             self.send_response({'error': sys.exc_info()[0]})
+
+class runMarxan(MarxanWebSocketHandler):
+    def open(self):
+        super(runMarxan, self).open()
+        #set the current folder to the project folder so files can be found in the input.dat file
+        os.chdir(self.folder_project)
+        #delete all of the current output files
+        _deleteAllFiles(self.folder_output)
+        #run marxan - the Subprocess.STREAM option does not work on Windows - see here: https://www.tornadoweb.org/en/stable/process.html?highlight=Subprocess#tornado.process.Subprocess
+        self.app = Subprocess([MARXAN_EXECUTABLE + ";\n"], stdout=Subprocess.STREAM, stdin=subprocess.PIPE, shell=True)
+        IOLoop.current().spawn_callback(self.stream_output)
+        self.app.stdin.write('\n') # to end the marxan process send ENTER to the stdin
+
+    @gen.coroutine
+    def stream_output(self):
+        try:
+            while True:
+                # line = yield self.app.stdout.read_bytes(4096)
+                line = yield self.app.stdout.read_bytes(4096, partial=True)
+                self.write_message(line)
+        except StreamClosedError as e:
+            print e.message
+    
 ####################################################################################################################################################################################################################################################################
 ## tornado functions
 ####################################################################################################################################################################################################################################################################
@@ -790,6 +845,7 @@ def make_app():
         ("/marxan-server/getProjects", getProjects),
         ("/marxan-server/updateSpecFile", updateSpecFile),
         ("/marxan-server/preprocessFeature", preprocessFeature),
+        ("/marxan-server/runMarxan", runMarxan),
     ])
 
 if __name__ == "__main__":
