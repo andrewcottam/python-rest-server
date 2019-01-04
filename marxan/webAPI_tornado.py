@@ -3,6 +3,9 @@ from tornado.process import Subprocess
 from tornado.ioloop import IOLoop
 from tornado import concurrent
 from tornado import gen
+from psycopg2 import sql
+from mapbox import Uploader
+from mapbox import errors
 import tornado.ioloop
 import tornado.web
 import tornado.websocket
@@ -20,43 +23,110 @@ import datetime
 import select
 import subprocess
 import sys
+import commands
+import zipfile
+import shutil
 
 ####################################################################################################################################################################################################################################################################
 ## constant declarations
 ####################################################################################################################################################################################################################################################################
+CONNECTION_STRING = "dbname='biopama' host='localhost' user='jrc' password='thargal88'"
 MARXAN_FOLDER = "/home/ubuntu/workspace/marxan/Marxan243/MarxanData_unix/"
+MARXAN_EXECUTABLE = MARXAN_FOLDER + "MarOpt_v243_Linux64"
+MARXAN_WEB_RESOURCES_FOLDER = MARXAN_FOLDER + "_marxan_web_resources/"
+START_PROJECT_FOLDER = MARXAN_WEB_RESOURCES_FOLDER + "Start project/"
+OGR2OGR_EXECUTABLE = "/home/ubuntu/miniconda2/bin/ogr2ogr"
+MAPBOX_ACCESS_TOKEN = "sk.eyJ1IjoiYmxpc2h0ZW4iLCJhIjoiY2piNm1tOGwxMG9lajMzcXBlZDR4aWVjdiJ9.Z1Jq4UAgGpXukvnUReLO1g"
+EMPTY_PROJECT_TEMPLATE_FOLDER = "empty_project/"
 USER_DATA_FILENAME = "user.dat"
 PROJECT_DATA_FILENAME = "input.dat"
 OUTPUT_LOG_FILENAME = "output_log.dat"
+PLANNING_UNITS_FILENAME ="pu.dat"
+SPEC_FILENAME ="spec.dat"
+BOUNDARY_LENGTH_FILENAME = "bounds.dat"
 BEST_SOLUTION_FILENAME = "output_mvbest.txt"
 OUTPUT_SUM_FILENAME = "output_sum.txt"
 SUMMED_SOLUTION_FILENAME = "output_ssoln.txt"
 FEATURE_PREPROCESSING_FILENAME = "feature_preprocessing.dat"
 PROTECTED_AREA_INTERSECTIONS_FILENAME = "protected_area_intersections.dat"
-MARXAN_EXECUTABLE = MARXAN_FOLDER + "MarOpt_v243_Linux64"
+SOLUTION_FILE_PREFIX = "output_r"
+MISSING_VALUES_FILE_PREFIX = "output_mv"
 
 ####################################################################################################################################################################################################################################################################
-## generic functions that dont belong to a class so can be called by subclasses of tornado.web.RequestHandler and tornado.websocket.WebSocketHandler equally - underscores are used so they dont mask the equivalent endpoints
+## generic functions that dont belong to a class so can be called by subclasses of tornado.web.RequestHandler and tornado.websocket.WebSocketHandler equally - underscores are used so they dont mask the equivalent url endpoints
 ####################################################################################################################################################################################################################################################################
+
+#creates a new user
+def _createUser(obj, user, fullname, email, password, mapboxaccesstoken):
+    #get the list of users
+    users = _getUsers()
+    if user in users:
+        raise MarxanServicesError("User '" + user + "' already exists")
+    #create the user folder
+    obj.folder_user = MARXAN_FOLDER + user + os.sep
+    os.mkdir(obj.folder_user)
+    #copy the user.dat file
+    shutil.copyfile(MARXAN_WEB_RESOURCES_FOLDER + USER_DATA_FILENAME, obj.folder_user + USER_DATA_FILENAME)
+    #update the user.dat file parameters
+    _updateParameters(obj.folder_user + USER_DATA_FILENAME, {'NAME': fullname,'EMAIL': email,'PASSWORD': password,'MAPBOXACCESSTOKEN': mapboxaccesstoken})
+
+#gets a list of users
+def _getUsers():
+    #get a list of folders underneath the marxan home folder
+    user_folders = glob.glob(MARXAN_FOLDER + "*/")
+    #convert these into a list of users
+    users = [user[:-1][user[:-1].rfind("/")+1:] for user in user_folders]
+    if "input" in users: 
+        users.remove("input")
+    if "output" in users: 
+        users.remove("output")
+    return [u for u in users if u[:1] != "_"]
+    
+#creates a new empty project with the passed parameters
+def _createProject(obj, name):
+    #make sure the project does not already exist
+    if os.path.exists(obj.folder_user + name):
+        raise MarxanServicesError("The project '" + name + "' already exists")
+    #copy the _project_template folder to the new location
+    _copyDirectory(MARXAN_WEB_RESOURCES_FOLDER + EMPTY_PROJECT_TEMPLATE_FOLDER, obj.folder_user + name)
+    #set the paths to this project in the passed object - the arguments are normally passed as lists in tornado.get_argument
+    _setFolderPaths(obj, {'user': [obj.user], 'project': [name]})
+
+#deletes a project
+def _deleteProject(obj):
+    #delete the folder and all of its contents
+    shutil.rmtree(obj.folder_project)
+
+#clones a project from the source_folder which is a full folder path to the destination_folder which is a full folder path
+def _cloneProject(source_folder, destination_folder):
+    #get the project name
+    original_project_name = source_folder[:-1].split("/")[-1]
+    #get the new project folder
+    new_project_folder = destination_folder + original_project_name + os.sep
+    #recursively check that the folder does not exist until we get a new folder that doesnt exist
+    while (os.path.exists(new_project_folder)):
+        new_project_folder = new_project_folder[:-1] + "_copy/"
+    #copy the project
+    shutil.copytree(source_folder, new_project_folder)
+    #update the description and create date
+    _updateParameters(new_project_folder + PROJECT_DATA_FILENAME, {'DESCRIPTION': "Clone of project '" + original_project_name + "'",  'CREATEDATE': datetime.datetime.now().strftime("%a, %d %b %Y %H:%M:%S")})
+    #return the name of the new project
+    return new_project_folder[:-1].split("/")[-1]
 
 #sets the various paths to the users folder and project folders using the request arguments in the passed object
-def _setFolderPaths(obj):
-    if "user" in obj.request.arguments.keys():
-        user = obj.request.arguments["user"][0]
+def _setFolderPaths(obj, arguments):
+    if "user" in arguments.keys():
+        user = arguments["user"][0]
         obj.folder_user = MARXAN_FOLDER + user + os.sep
-        if not os.path.exists(obj.folder_user):
-            raise MarxanServicesError("The user folder '" + obj.folder_user +"' does not exist") 
         obj.user = user
         #get the project folder and the input and output folders
-        if "project" in obj.request.arguments.keys():
-            obj.folder_project = obj.folder_user + obj.request.arguments["project"][0] + os.sep
-            if not os.path.exists(obj.folder_project):
-                raise MarxanServicesError("The project folder '" + obj.folder_project +"' does not exist") 
+        if "project" in arguments.keys():
+            obj.folder_project = obj.folder_user + arguments["project"][0] + os.sep
             obj.folder_input =  obj.folder_project + "input" + os.sep
             obj.folder_output = obj.folder_project + "output" + os.sep
             obj.project = obj.get_argument("project")
 
-#get the project data from the input.dat file - using the obj.folder_project path and creating an attribute called projectData in the obj for the return data
+#get the project data from the input.dat file as a categorised list of settings - using the obj.folder_project path and creating an attribute called projectData in the obj for the return data
 def _getProjectData(obj):
     paramsArray = []
     filesDict = {}
@@ -79,20 +149,29 @@ def _getProjectData(obj):
             key, value = _getKeyValue(s, k)
             metadataDict.update({key: value})
             if k=='PLANNING_UNIT_NAME':
-                conn = psycopg2.connect("dbname='biopama' host='localhost' user='jrc' password='thargal88'")
-                df2 = pandas.read_sql_query("select * from marxan.get_planning_units_metadata('" + value + "')",con=conn)
+                df2 = PostGIS().getDataFrame("select * from marxan.get_planning_units_metadata(%s)", [value])
                 if (df2.shape[0] == 0):
                     metadataDict.update({'pu_alias': value,'pu_description': 'No description','pu_domain': 'Unknown domain','pu_area': 'Unknown area','pu_creation_date': 'Unknown date'})
                 else:
                     #get the data from the metadata_planning_units table
                     metadataDict.update({'pu_alias': df2.iloc[0]['alias'],'pu_description': df2.iloc[0]['description'],'pu_domain': df2.iloc[0]['domain'],'pu_area': df2.iloc[0]['area'],'pu_creation_date': df2.iloc[0]['creation_date']})
-                conn.close()
         elif k in ['CLASSIFICATION', 'NUMCLASSES','COLORCODE', 'TOPCLASSES','OPACITY']: # renderer section of the input.dat file
             key, value = _getKeyValue(s, k)
             rendererDict.update({key: value})
     #set the project data
     obj.projectData = {}
     obj.projectData.update({'project': obj.project, 'metadata': metadataDict, 'files': filesDict, 'runParameters': paramsArray, 'renderer': rendererDict})
+    
+#gets the name of the input file from the projects input.dat file using the obj.folder_project path
+def _getProjectInputFilename(obj, fileToGet):
+    if not hasattr(obj, "projectData"):
+        _getProjectData(obj)
+    return obj.projectData["files"][fileToGet]
+
+#gets the projects input data using the fileToGet, e.g. SPECNAME will return the data from the file corresponding to the input.dat file SPECNAME setting
+def _getProjectInputData(obj, fileToGet, errorIfNotExists = False):
+    filename = obj.folder_input + os.sep + _getProjectInputFilename(obj, fileToGet)
+    return _loadCSV(filename, errorIfNotExists)
     
 #get the data on the user from the user.dat file 
 def _getUserData(obj):
@@ -143,6 +222,10 @@ def _getSpeciesData(obj):
     output_df['target_value'] = (output_df['target_value'] * 100).astype(int)
     obj.speciesData = output_df
         
+#gets data for a single feature
+def _getFeature(obj, oid):
+    obj.data = PostGIS().getDataFrame("SELECT oid::integer as id, creation_date::text, feature_class_name, alias, _area area, description FROM marxan.metadata_interest_features WHERE oid = %s", [oid])
+
 #get all species information from the PostGIS database
 def _getAllSpeciesData(obj):
     obj.allSpeciesData = PostGIS().getDataFrame("SELECT oid::integer as id, creation_date::text, feature_class_name, alias, _area area, description FROM marxan.metadata_interest_features order by alias;")
@@ -184,6 +267,14 @@ def _getSummedSolution(obj):
     df = _loadCSV(obj.folder_output + SUMMED_SOLUTION_FILENAME)
     obj.summedSolution = _normaliseDataFrame(df, "number", "planning_unit")
 
+def _getSolution(obj, solutionId):
+    df = _loadCSV(obj.folder_output + SOLUTION_FILE_PREFIX + "%05d" % int(solutionId) + ".txt")
+    obj.solution = _normaliseDataFrame(df, "solution", "planning_unit")
+
+def _getMissingValues(obj, solutionId):
+    df = _loadCSV(obj.folder_output + MISSING_VALUES_FILE_PREFIX + "%05d" % int(solutionId) + ".txt")
+    obj.missingValues = df.to_dict(orient="split")["data"]
+
 #gets the projects for the current user
 def _getProjects(obj):
     #get a list of folders underneath the users home folder
@@ -204,28 +295,32 @@ def _getProjects(obj):
             projects.append({'name': project,'description': obj.projectData["metadata"]["DESCRIPTION"],'createdate': obj.projectData["metadata"]["CREATEDATE"],'oldVersion': obj.projectData["metadata"]["OLDVERSION"]})
     obj.projects = projects
 
-#creates or updates the spec.dat file with the passed interest features
-def _updateSpeciesFile(obj, interest_features, target_values, spf_values):
+#updates/creates the spec.dat file with the passed interest features
+def _updateSpeciesFile(obj, interest_features, target_values, spf_values, create = False):
     #get the features to create/update as a list of integer ids
     ids = _txtIntsToList(interest_features)
     props = _txtIntsToList(target_values) 
     spfs = spf_values.split(",") 
-    #get the current list of features
-    df = _getProjectInputData(obj, "SPECNAME")
-    if df.empty:
-        currentIds = []
+    if create:
+        #there are no existing ids as we are creating a new pu.dat file
+        removedIds = []    
     else:
-        currentIds = df.id.unique().tolist() 
-    #get the list of features to remove from the current list (i.e. they are not in the passed list of interest features)
-    removedIds = list(set(currentIds) - set(ids))
-    #update the puvspr.dat file and the feature preprocessing files to remove any species that are no longer in the project
-    if len(removedIds) > 0:
-        #get the name of the puvspr file from the project data
-        puvsprFilename = _getProjectInputFilename(obj, "PUVSPRNAME")
-        #update the puvspr.dat file
-        _deleteRecordsInTextFile(puvsprFilename, "species", removedIds, False)
-        #update the preprocessing.dat file to remove any species that are no longer in the project - these will need to be preprocessed again
-        _deleteRecordsInTextFile(obj.folder_input + FEATURE_PREPROCESSING_FILENAME, "id", removedIds, False)
+        #get the current list of features
+        df = _getProjectInputData(obj, "SPECNAME")
+        if df.empty:
+            currentIds = []
+        else:
+            currentIds = df.id.unique().tolist() 
+        #get the list of features to remove from the current list (i.e. they are not in the passed list of interest features)
+        removedIds = list(set(currentIds) - set(ids))
+        #update the puvspr.dat file and the feature preprocessing files to remove any species that are no longer in the project
+        if len(removedIds) > 0:
+            #get the name of the puvspr file from the project data
+            puvsprFilename = _getProjectInputFilename(obj, "PUVSPRNAME")
+            #update the puvspr.dat file
+            _deleteRecordsInTextFile(obj.folder_input + puvsprFilename, "species", removedIds, False)
+            #update the preprocessing.dat file to remove any species that are no longer in the project - these will need to be preprocessed again
+            _deleteRecordsInTextFile(obj.folder_input + FEATURE_PREPROCESSING_FILENAME, "id", removedIds, False)
     #create the dataframe to write to file
     records = []
     for i in range(len(ids)):
@@ -235,16 +330,42 @@ def _updateSpeciesFile(obj, interest_features, target_values, spf_values):
     #write the data to file
     _writeCSV(obj, "SPECNAME", df)
 
-#gets the name of the input file from the projects input.dat file using the obj.folder_project path
-def _getProjectInputFilename(obj, fileToGet):
-    if not hasattr(obj, "projectData"):
-        _getProjectData(obj)
-    return obj.projectData["files"][fileToGet]
+#create the array of the puids 
+def _puidsArrayToPuDatFormat(puid_array, pu_status):
+    return pandas.DataFrame([[int(i),pu_status] for i in puid_array], columns=['id','status_new']).astype({'id':'int64','status_new':'int64'})
 
-#gets the projects input data using the fileToGet, e.g. SPECNAME will return the data from the file corresponding to the input.dat file SPECNAME setting
-def _getProjectInputData(obj, fileToGet, errorIfNotExists = False):
-    filename = obj.folder_input + os.sep + _getProjectInputFilename(obj, fileToGet)
-    return _loadCSV(filename, errorIfNotExists)
+#creates the pu.dat file using the ids from the PostGIS feature class as the planning unit ids in the pu.dat file
+def _createPuFile(obj, planning_grid_name):
+    #get the path to the pu.dat file
+    filename = obj.folder_input + PLANNING_UNITS_FILENAME
+    #create the pu.dat file using a postgis query
+    PostGIS().executeToText(sql.SQL("COPY (SELECT puid as id,1::double precision as cost,0::integer as status FROM marxan.{}) TO STDOUT WITH CSV HEADER;").format(sql.Identifier(planning_grid_name)), filename)
+    #update the input.dat file
+    _updateParameters(obj.folder_project + PROJECT_DATA_FILENAME, {'PUNAME': PLANNING_UNITS_FILENAME})
+
+#updates the pu.dat file with the passed arrays of ids for the various statuses
+def _updatePuFile(obj, status1_ids, status2_ids, status3_ids):
+    status1 = _puidsArrayToPuDatFormat(status1_ids,1)
+    status2 = _puidsArrayToPuDatFormat(status2_ids,2)
+    status3 = _puidsArrayToPuDatFormat(status3_ids,3)
+    #get the path to the pu.dat file
+    filename = obj.folder_input + _getProjectInputFilename(obj, "PUNAME")
+    #read the data from the pu.dat file 
+    df = _loadCSV(filename)
+    #reset the status for all planning units
+    df['status'] = 0
+    #concatenate the status arrays
+    df2 = pandas.concat([status1, status2, status3])
+    #join the new statuses to the ones from the pu.dat file
+    df = df.merge(df2, on='id', how='left')
+    #update the status value
+    df['status_final'] = df['status_new'].fillna(df['status']).astype('int')
+    df = df.drop(['status_new', 'status'], axis=1)
+    df.rename(columns={'status_final':'status'}, inplace=True)
+    #set the datatypes
+    df = df.astype({'id':'int64','cost':'int64','status':'int64'})
+    #write to file
+    _writeCSV(obj, "PUNAME", df)
     
 #loads a csv file and returns the data as a dataframe or an empty dataframe if the file does not exist. If errorIfNotExists is True then it raises an error.
 def _loadCSV(filename, errorIfNotExists = False):
@@ -257,14 +378,14 @@ def _loadCSV(filename, errorIfNotExists = False):
             df = pandas.DataFrame()
     return df
 
-#saves the dataframe to a csv file specified by the fileToWrite, e.g. _writeCSV(self, "PUVSPRNAME", df) - this only applies to the files managed by Marxan in the input.dat file, e.g. SPEC, PU, PUVSPRNAME
+#saves the dataframe to a csv file specified by the fileToWrite, e.g. _writeCSV(self, "PUVSPRNAME", df) - this only applies to the files managed by Marxan in the input.dat file, e.g. SPECNAME, PUNAME, PUVSPRNAME, BOUNDNAME
 def _writeCSV(obj, fileToWrite, df, writeIndex = False):
     _filename = _getProjectInputFilename(obj, fileToWrite)
-    if _filename == "":
+    if _filename == "": #the file has not previously been created
         raise MarxanServicesError("The filename for the " + fileToWrite + ".dat file has not been set in the input.dat file")
     df.to_csv(obj.folder_input + _filename, index = writeIndex)
 
-#writes the dataframe to the file - for files not managed in the input.dat file
+#writes the dataframe to the file - for files not managed in the input.dat file or if the filename has not yet been set in the input.dat file
 def _writeToDatFile(file, dataframe):
     #see if the file exists
     if (os.path.exists(file)):
@@ -278,6 +399,11 @@ def _writeToDatFile(file, dataframe):
     #write the file
     df.to_csv(file, index=False)
     
+def _writeFile(filename, data):
+    f = open(filename, 'wb')
+    f.write(data)
+    f.close()
+    
 #gets a files contents as a string
 def _readFile(filename):
     f = open(filename)
@@ -285,17 +411,23 @@ def _readFile(filename):
     f.close()
     return s
 
-def _writeFile(filename, data):
-    f = open(filename, 'wb')
-    f.write(data)
-    f.close()
-    
 #deletes all of the files in the passed folder
 def _deleteAllFiles(folder):
-	files = glob.glob(folder + "*")
-	for f in files:
-		os.remove(f)
+    files = glob.glob(folder + "*")
+    for f in files:
+        os.remove(f)
 
+#copies a directory from src to dest recursively
+def _copyDirectory(src, dest):
+    try:
+        shutil.copytree(src, dest)
+    # Directories are the same
+    except shutil.Error as e:
+        raise MarxanServicesError('Directory not copied. Error: %s' % e)
+    # Any error saying that the directory doesn't exist
+    except OSError as e:
+        raise MarxanServicesError('Directory not copied. Error: %s' % e)
+        
 #updates the parameters in the *.dat file with the new parameters passed as a dict
 def _updateParameters(data_file, newParams):
     if newParams:
@@ -336,6 +468,8 @@ def _getKeyValue(text, parameterName):
 
 #converts a data frame with duplicate values into a normalised array
 def _normaliseDataFrame(df, columnToNormaliseBy, puidColumnName):
+    if df.empty:
+        return []
     #get the groups from the data
     groups = df.groupby(by = columnToNormaliseBy).groups
     #build the response, e.g. a normal data frame with repeated values in the columnToNormaliseBy -> [["VI", [7, 8, 9]], ["IV", [0, 1, 2, 3, 4]], ["V", [5, 6]]]
@@ -351,10 +485,15 @@ def _deleteRecordsInTextFile(filename, id_columnname, ids, write_index):
         df = df[~df[id_columnname].isin(ids)]
         #write the results back to the file
         df.to_csv(filename, index = write_index)
+    else:
+        raise MarxanServicesError("The file '" + filename + "' does not exist")
 
 #converts a comma-separated set of integer values to a list of integers
 def _txtIntsToList(txtInts):
-    return [int(s) for s in txtInts.split(",")] 
+    if txtInts:
+        return [int(s) for s in txtInts.split(",")] 
+    else:
+        return []
 
 #checks that all of the arguments in argumentList are in the arguments dictionary
 def _validateArguments(arguments, argumentList):
@@ -362,6 +501,92 @@ def _validateArguments(arguments, argumentList):
         if argument not in arguments.keys():
             raise MarxanServicesError("Missing input argument:" + argument)
 
+#converts the raw arguments from the request.arguments parameter into a simple dict excluding those in omitArgumentList
+#e.g. _getSimpleArguments(self.request.arguments, ['user','project','callback']) would convert {'project': ['Tonga marine 30km2'], 'callback': ['__jp13'], 'COLORCODE': ['PiYG'], 'user': ['andrew']} to {'COLORCODE': 'PiYG'}
+def _getSimpleArguments(arguments, omitArgumentList):
+    returnDict = {}
+    for argument in arguments:
+        if argument not in omitArgumentList:
+            returnDict.update({argument: arguments[argument][0]})
+    return returnDict
+
+#gets the passed argument name as an array of integers, e.g. ['12,15,4,6'] -> [12,15,4,6]
+def _getIntArrayFromArg(arguments, argName):
+    if argName in arguments.keys():
+        return [int(s) for s in arguments[argName][0].split(",")]
+    else:
+        return []
+    
+#creates a zip file with the list of files in the folder with the filename zipfilename
+def _createZipfile(lstFileNames, folder, zipfilename):
+    with zipfile.ZipFile(folder + zipfilename, 'w') as myzip:
+        for f in lstFileNames:   
+            arcname = os.path.split(f)[1]
+            myzip.write(f,arcname)
+
+#deletes a zip file and the archive files, e.g. deleteZippedShapefile(MARXAN_FOLDER, "pngprov")
+def _deleteZippedShapefile(folder, archivename):
+    files = glob.glob(folder + archivename + '.*')
+    if len(files)>0:
+        [os.remove(f) for f in files if f[-3:] in ['shx','shp','xml','sbx','prj','sbn','zip','dbf','cpg']]       
+
+#unzips a zip file
+def _unzipFile(filename):
+    #unzip the shapefile
+    if not os.path.exists(MARXAN_FOLDER + filename):
+        raise MarxanServicesError("The zip file '" + filename + "' does not exist")
+    zip_ref = zipfile.ZipFile(MARXAN_FOLDER + filename, 'r')
+    filenames = zip_ref.namelist()
+    rootfilename = filenames[0][:-4]
+    zip_ref.extractall(MARXAN_FOLDER)
+    zip_ref.close()
+    return rootfilename
+
+#uploads a tileset to mapbox using the filename of the file (filename) to upload and the name of the resulting tileset (_name)
+def _uploadTileset(filename, _name):
+    #create an instance of the upload service
+    service = Uploader(access_token=MAPBOX_ACCESS_TOKEN)    
+    with open(filename, 'rb') as src:
+        upload_resp = service.upload(src, _name)
+        upload_id = upload_resp.json()['id']
+        return upload_id
+        
+def _uploadTilesetToMapbox(feature_class_name, mapbox_layer_name):
+    #create the file to upload to MapBox - now using shapefiles as kml files only import the name and description properties into a mapbox tileset
+    cmd = OGR2OGR_EXECUTABLE + ' -f "ESRI Shapefile" ' + MARXAN_FOLDER + feature_class_name + '.shp' + ' "PG:host=localhost dbname=biopama user=jrc password=thargal88" -sql "select * from Marxan.' + feature_class_name + '" -nln ' + mapbox_layer_name + ' -s_srs EPSG:3410 -t_srs EPSG:3857'
+    status, output = commands.getstatusoutput(cmd) 
+    #check for errors from the ogr2ogr command
+    if output != "":
+        raise MarxanServicesError("The ogr2ogr command failed with the error: " + output)
+    #zip the shapefile to upload to Mapbox
+    lstFilenames = glob.glob(MARXAN_FOLDER + feature_class_name + '.*')
+    zipfilename = MARXAN_FOLDER + feature_class_name + ".zip"
+    _createZipfile(lstFilenames, MARXAN_FOLDER, feature_class_name + ".zip")
+    #upload to mapbox
+    uploadId = _uploadTileset(zipfilename, feature_class_name)
+    #delete the temporary shapefile file and zip file
+    _deleteZippedShapefile(MARXAN_FOLDER, feature_class_name)
+    return uploadId
+    
+#imports the feature from a zipped shapefile (given by filename)
+def _importFeature(filename, name, description):
+    #unzip the shapefile
+    rootfilename = _unzipFile(filename) 
+    #import the file into PostGIS
+    postgis = PostGIS()
+    postgis.importShapefile(rootfilename + ".shp", "undissolved", "EPSG:3410")
+    #delete the shapefile and the zip file
+    _deleteZippedShapefile(MARXAN_FOLDER, rootfilename)
+    #dissolve the feature class
+    postgis.execute(sql.SQL("SELECT ST_Union(wkb_geometry) geometry INTO marxan.{} FROM marxan.undissolved;").format(sql.Identifier(rootfilename)))   
+    #create an index
+    postgis.execute(sql.SQL("CREATE INDEX _gix ON marxan.{} USING GIST (geometry);").format(sql.Identifier(rootfilename)))
+    #drop the undissolved feature class
+    postgis.execute("DROP TABLE IF EXISTS marxan.undissolved;") 
+    #create a record for this new feature in the metadata_interest_features table
+    id = postgis.execute(sql.SQL("INSERT INTO marxan.metadata_interest_features SELECT %s, %s, %s, now(), sub._area FROM (SELECT ST_Area(geometry) _area FROM marxan.{}) AS sub RETURNING oid;").format(sql.Identifier(rootfilename)), [rootfilename, name, description], "One")[0]
+    return id
+    
 ####################################################################################################################################################################################################################################################################
 ## error classes
 ####################################################################################################################################################################################################################################################################
@@ -371,23 +596,86 @@ class MarxanServicesError(Exception):
     pass
 
 ####################################################################################################################################################################################################################################################################
-## class to return data from postgis
+## class to return data from postgis synchronously - the asynchronous version is the QueryWebSocketHandler class
 ####################################################################################################################################################################################################################################################################
 
 class PostGIS():
     def __init__(self):
         #get a connection to the database
-        self.connection = psycopg2.connect("dbname='biopama' host='localhost' user='jrc' password='thargal88'")
+        self.connection = psycopg2.connect(CONNECTION_STRING)
+        self.cursor = self.connection.cursor()
 
-    def getDict(self, sql):
-        df = pandas.read_sql_query(sql, self.connection)
+    #does argument binding to prevent sql injection attacks
+    def _mogrify(self, sql, data):
+        if data is not None:
+            return self.cursor.mogrify(sql, data)
+        else:
+            return sql
+    
+    #get a pandas data frame 
+    def _getDataFrame(self, sql, data):
+        #do any argument binding 
+        sql = self._mogrify(sql, data)
+        return pandas.read_sql_query(sql, self.connection)
+
+    #called in exceptions to close the cursor and connection
+    def _cleanup(self):
+        self.cursor.close()
+        self.connection.commit()
+        self.connection.close()
+        
+    #executes a query and returns the data as a data frame
+    def getDataFrame(self, sql, data = None):
+        return self._getDataFrame(sql, data)
+
+    #executes a query and returns the data as a records array
+    def getDict(self, sql, data = None):
+        df = self._getDataFrame(sql, data)
         return df.to_dict(orient="records")
             
-    def getDataFrame(self, sql):
-        return pandas.read_sql_query(sql, self.connection)
-            
+    #executes a query and returns the first records as specified by the numberToFetch parameter
+    def execute(self, sql, data = None, numberToFetch = "None"):
+        try:
+            records = []
+            #do any argument binding 
+            sql = self._mogrify(sql, data)
+            self.cursor.execute(sql)
+            #commit the transaction immediately
+            self.connection.commit()
+            if numberToFetch == "One":
+                records = self.cursor.fetchone()
+            elif numberToFetch == "All":
+                records = self.cursor.fetchall()
+            return records
+        except:
+            self._cleanup()
+    
+    #executes a query and writes the results to a text file
+    def executeToText(self, sql, filename):
+        try:
+            with open(filename, 'w') as f:
+                self.cursor.copy_expert(sql, f)
+                self.connection.commit()
+        except Exception as e:
+            self._cleanup()
+        
+    #imports a shapefile into PostGIS
+    def importShapefile(self, shapefile, feature_class_name, epsgCode):
+        try:
+            #drop the feature class if it already exists
+            self.execute(sql.SQL("DROP TABLE IF EXISTS marxan.{};").format(sql.Identifier(feature_class_name)))
+            #using ogr2ogr produces an additional field - the ogc_fid field which is an autonumbering oid
+            cmd = OGR2OGR_EXECUTABLE + ' -f "PostgreSQL" PG:"host=localhost user=jrc dbname=biopama password=thargal88" ' + MARXAN_FOLDER + shapefile + ' -nlt GEOMETRY -lco SCHEMA=marxan -nln ' + feature_class_name + ' -t_srs ' + epsgCode
+            #run the import
+            status, output = commands.getstatusoutput(cmd) 
+            #check for errors
+            if (output != ''):
+                raise MarxanServicesError("Error importing shapefile: " + output)
+        except:
+            self._cleanup()
+                
     def __del__(self):
-        self.connection.close()
+        self._cleanup()
     
 ####################################################################################################################################################################################################################################################################
 ## baseclass for handling REST requests
@@ -404,7 +692,7 @@ class MarxanRESTHandler(tornado.web.RequestHandler):
             #instantiate the response dictionary
             self.response = {}
             #set the folder paths for the user and optionally project
-            _setFolderPaths(self)
+            _setFolderPaths(self, self.request.arguments)
         except (MarxanServicesError) as e:
             self.send_response({"error": repr(e)})
     
@@ -442,11 +730,95 @@ class MarxanRESTHandler(tornado.web.RequestHandler):
 ## RequestHandler subclasses
 ####################################################################################################################################################################################################################################################################
 
+#creates a new user
+#POST ONLY
+class createUser(MarxanRESTHandler):
+    def post(self):
+        #validate the input arguments 
+        _validateArguments(self.request.arguments, ["user","password", "fullname", "email", "mapboxaccesstoken"])  
+        #create the user
+        _createUser(self, self.get_argument('user'), self.get_argument('fullname'), self.get_argument('email'), self.get_argument('password'), self.get_argument('mapboxaccesstoken'))
+        #copy the start project into the users folder
+        _cloneProject(START_PROJECT_FOLDER, MARXAN_FOLDER + self.get_argument('user') + os.sep)
+        #set the response
+        self.send_response({'info': "User '" + self.get_argument('user') + "' created"})
+
+#creates a project
+#POST ONLY
+class createProject(MarxanRESTHandler):
+    def post(self):
+        #validate the input arguments
+        _validateArguments(self.request.arguments, ['user','project','description','planning_grid_name','interest_features','target_values','spf_values'])  
+        #create the empty project folder
+        _createProject(self, self.get_argument('project'))
+        #update the projects parameters
+        _updateParameters(self.folder_project + PROJECT_DATA_FILENAME, {'DESCRIPTION': self.get_argument('description'), 'CREATEDATE': datetime.datetime.now().strftime("%a, %d %b %Y %H:%M:%S"), 'PLANNING_UNIT_NAME': self.get_argument('planning_grid_name')})
+        #create the spec.dat file
+        _updateSpeciesFile(self, self.get_argument("interest_features"), self.get_argument("target_values"), self.get_argument("spf_values"), True)
+        #create the pu.dat file
+        _createPuFile(self, self.get_argument('planning_grid_name'))
+        #set the response
+        self.send_response({'info': "Project '" + self.get_argument('project') + "' created", 'name': self.get_argument('project')})
+
+#deletes a project
+#https://db-server-blishten.c9users.io:8081/marxan-server/deleteProject?user=andrew&project=test2&callback=__jp7
+class deleteProject(MarxanRESTHandler):
+    def get(self):
+        #validate the input arguments
+        _validateArguments(self.request.arguments, ['user','project'])  
+        #get the existing projects
+        _getProjects(self)
+        if len(self.projects) == 1:
+            raise MarxanServicesError("You cannot delete all projects")    
+        _deleteProject(self)
+        #set the response
+        self.send_response({'info': "Project '" + self.get_argument("project") + "' deleted", 'project': self.get_argument("project")})
+
+#clones the project
+#https://db-server-blishten.c9users.io:8081/marxan-server/cloneProject?user=andrew&project=Tonga%20marine%2030km2&callback=__jp15
+class cloneProject(MarxanRESTHandler):
+    def get(self):
+        #validate the input arguments
+        _validateArguments(self.request.arguments, ['user','project'])  
+        #clone the folder recursively
+        clonedName = _cloneProject(self.folder_project, self.folder_user)
+        #set the response
+        self.send_response({'info': "Project '" + clonedName + "' created", 'name': clonedName})
+
+#renames a project
+#https://db-server-blishten.c9users.io:8081/marxan-server/renameProject?user=andrew&project=Tonga%20marine%2030km2&newName=Tonga%20marine%2030km&callback=__jp5
+class renameProject(MarxanRESTHandler):
+    def get(self):
+        #validate the input arguments
+        _validateArguments(self.request.arguments, ['user','project','newName'])  
+        #rename the folder
+        os.rename(self.folder_project, self.folder_user + self.get_argument("newName"))
+        #set the new name as the users last project so it will load on login
+        _updateParameters(self.folder_user + USER_DATA_FILENAME, {'LASTPROJECT': self.get_argument("newName")})
+        #set the response
+        self.send_response({"info": "Project renamed to '" + self.get_argument("newName") + "'", 'project': self.get_argument("project")})
+
 #https://db-server-blishten.c9users.io:8081/marxan-server/getCountries?callback=__jp0
 class getCountries(MarxanRESTHandler):
     def get(self):
         content = PostGIS().getDict("SELECT iso3, original_n FROM marxan.gaul_2015_simplified_1km where original_n not like '%|%' and iso3 not like '%|%' order by 2;")
         self.send_response({'records': content})        
+
+#https://db-server-blishten.c9users.io:8081/marxan-server/getPlanningUnitGrids?callback=__jp0
+class getPlanningUnitGrids(MarxanRESTHandler):
+    def get(self):
+        content = PostGIS().getDict("SELECT feature_class_name ,alias ,description ,creation_date::text ,country_id ,aoi_id,domain,_area,ST_AsText(envelope) envelope FROM marxan.metadata_planning_units order by 1;")
+        self.send_response({'info': 'Planning unit grids retrieved', 'planning_unit_grids': content})        
+        
+#https://db-server-blishten.c9users.io:8081/marxan-server/createPlanningUnitGrid?iso3=AND&domain=Terrestrial&areakm2=50&callback=__jp10        
+class createPlanningUnitGrid(MarxanRESTHandler):
+    def get(self):
+        #validate the input arguments
+        _validateArguments(self.request.arguments, ['iso3','domain','areakm2'])    
+        #create the new planning unit and get the first row back
+        data = PostGIS().execute("SELECT * FROM marxan.hexagons(%s,%s,%s);", [self.get_argument('areakm2'), self.get_argument('iso3'), self.get_argument('domain')], "One")
+        #set the response
+        self.send_response({'info':'Planning unit grid created', 'planning_unit_grid': data[0]})
 
 #validates a user with the passed credentials
 #https://db-server-blishten.c9users.io:8081/marxan-server/validateUser?user=andrew&password=thargal88&callback=__jp2
@@ -478,6 +850,15 @@ class getUser(MarxanRESTHandler):
         #set the response
         self.send_response({'info': "User data received", "userData" : {k: v for k, v in self.userData.iteritems() if k != 'PASSWORD'}})
 
+#gets a list of all users
+#https://db-server-blishten.c9users.io:8081/marxan-server/getUsers
+class getUsers(MarxanRESTHandler):
+    def get(self):
+        #get the users
+        users = _getUsers()
+        #set the response
+        self.send_response({'info': users})
+
 #gets project information from the input.dat file
 #https://db-server-blishten.c9users.io:8081/marxan-server/getProject?user=andrew&project=Tonga%20marine%2030km2&callback=__jp2
 class getProject(MarxanRESTHandler):
@@ -496,8 +877,21 @@ class getProject(MarxanRESTHandler):
         _getPlanningUnitsData(self)
         #get the protected area intersections
         _getProtectedAreaIntersectionsData(self)
+        #set the project as the users last project so it will load on login
+        _updateParameters(self.folder_user + USER_DATA_FILENAME, {'LASTPROJECT': self.get_argument("project")})
         #set the response
         self.send_response({'project': self.projectData["project"], 'metadata': self.projectData["metadata"], 'files': self.projectData["files"], 'runParameters': self.projectData["runParameters"], 'renderer': self.projectData["renderer"], 'features': self.speciesData.to_dict(orient="records"), 'allFeatures': self.allSpeciesData.to_dict(orient="records"), 'feature_preprocessing': self.speciesPreProcessingData.to_dict(orient="split")["data"], 'planning_units': self.planningUnitsData, 'protected_area_intersections': self.protectedAreaIntersectionsData})
+
+#gets feature information from postgis
+#https://db-server-blishten.c9users.io:8081/marxan-server/getFeature?oid=63407942&callback=__jp2
+class getFeature(MarxanRESTHandler):
+    def get(self):
+        #validate the input arguments
+        _validateArguments(self.request.arguments, ['oid'])    
+        #get the data
+        _getFeature(self, self.get_argument("oid"))
+        #set the response
+        self.send_response({"data": self.data.to_dict(orient="records")})
 
 #gets species information for a specific project from the spec.dat file
 #https://db-server-blishten.c9users.io:8081/marxan-server/getSpeciesData?user=andrew&project=Tonga%20marine%2030km2&callback=__jp2
@@ -582,6 +976,7 @@ class getOutputSum(MarxanRESTHandler):
         _validateArguments(self.request.arguments, ['user','project'])    
         #get the output sum
         _getOutputSum(self)
+        print self.outputSum
         #set the response
         self.send_response({"data": self.outputSum.to_dict(orient="split")["data"]})
 
@@ -596,6 +991,30 @@ class getSummedSolution(MarxanRESTHandler):
         #set the response
         self.send_response({"data": self.summedSolution})
 
+#gets an individual solution
+#https://db-server-blishten.c9users.io:8081/marxan-server/getSolution?user=andrew&project=Tonga%20marine%2030km2&solution=1&callback=__jp7
+class getSolution(MarxanRESTHandler):
+    def get(self):
+        #validate the input arguments
+        _validateArguments(self.request.arguments, ['user','project','solution'])  
+        #get the solution
+        _getSolution(self, self.get_argument("solution"))
+        #get the corresponding missing values file, e.g. output_mv00031.txt
+        _getMissingValues(self, self.get_argument("solution"))
+        #set the response
+        self.send_response({'solution': self.solution, 'mv': self.missingValues})
+ 
+#gets the missing values for a single solution
+#https://db-server-blishten.c9users.io:8081/marxan-server/getMissingValues?user=andrew&project=Tonga%20marine%2030km2&solution=1&callback=__jp7
+class getMissingValues(MarxanRESTHandler):
+    def get(self):
+        #validate the input arguments
+        _validateArguments(self.request.arguments, ['user','project','solution'])  
+        #get the missing values file, e.g. output_mv00031.txt
+        _getMissingValues(self, self.get_argument("solution"))
+        #set the response
+        self.send_response({'missingValues': self.missingValues})
+ 
 #gets the combined results for the project
 #https://db-server-blishten.c9users.io:8081/marxan-server/getResults?user=andrew&project=Tonga%20marine%2030km2&callback=__jp2
 class getResults(MarxanRESTHandler):
@@ -634,6 +1053,78 @@ class updateSpecFile(MarxanRESTHandler):
         #set the response
         self.send_response({'info': "spec.dat file updated"})
 
+#updates the pu.dat file with the posted data
+class updatePUFile(MarxanRESTHandler):
+    def post(self):
+        #validate the input arguments
+        _validateArguments(self.request.arguments, ['user','project']) 
+        #get the ids for the different statuses
+        status1_ids = _getIntArrayFromArg(self.request.arguments, "status1")
+        status2_ids = _getIntArrayFromArg(self.request.arguments, "status2")
+        status3_ids = _getIntArrayFromArg(self.request.arguments, "status3")
+        #update the file 
+        _updatePuFile(self, status1_ids, status2_ids, status3_ids)
+        #set the response
+        self.send_response({'info': "pu.dat file updated"})
+
+#updates parameters in the users user.dat file       
+#POST ONLY
+class updateUserParameters(MarxanRESTHandler):
+    def post(self):
+        #validate the input arguments
+        _validateArguments(self.request.arguments, ['user'])  
+        #get the parameters to update as a simple dict
+        params = _getSimpleArguments(self.request.arguments, ['user','callback'])
+        #update the parameters
+        _updateParameters(self.folder_user + USER_DATA_FILENAME, params)
+        #set the response
+        self.send_response({'info': ",".join(params.keys()) + " parameters updated"})
+
+#updates parameters in the projects input.dat file       
+#POST ONLY
+class updateProjectParameters(MarxanRESTHandler):
+    def post(self):
+        #validate the input arguments
+        _validateArguments(self.request.arguments, ['user','project'])  
+        #get the parameters to update as a simple dict
+        params = _getSimpleArguments(self.request.arguments, ['user','project','callback'])
+        #update the parameters
+        _updateParameters(self.folder_project + PROJECT_DATA_FILENAME, params)
+        #set the response
+        self.send_response({'info': ",".join(params.keys()) + " parameters updated"})
+        
+#uploads a feature class with the passed feature class name to MapBox as a tileset using the MapBox Uploads API
+#https://db-server-blishten.c9users.io:8081/marxan-server/uploadTilesetToMapBox?feature_class_name=pu_ton_marine_hexagons_20&mapbox_layer_name=hexagons&callback=__jp9
+class uploadTilesetToMapBox(MarxanRESTHandler):
+    def get(self):
+        #validate the input arguments
+        _validateArguments(self.request.arguments, ['feature_class_name','mapbox_layer_name'])  
+        uploadId = _uploadTilesetToMapbox(self.get_argument('feature_class_name'),self.get_argument('mapbox_layer_name'))
+        #set the response for uploading to mapbox
+        self.send_response({'info': "Tileset '" + self.get_argument('feature_class_name') + "' uploading",'uploadid': uploadId})
+            
+#uploads a shapefile to the marxan root folder
+#POST ONLY 
+class uploadShapefile(MarxanRESTHandler):
+    def post(self):
+        #validate the input arguments
+        _validateArguments(self.request.arguments, ['filename','name','description'])   
+        #write the file to the server
+        _writeFile(MARXAN_FOLDER + self.get_argument('filename'), self.request.files['value'][0].body)
+        #set the response
+        self.send_response({'info': "File '" + self.get_argument('filename') + "' uploaded", 'file': self.get_argument('filename')})
+        
+#imports a shapefile which has been uploaded to the marxan root folder into PostGIS as a new feature dataset
+#https://db-server-blishten.c9users.io:8081/marxan-server/importFeature?filename=netafu.zip&name=Netafu%20island%20habitat&description=Digitised%20in%20ArcGIS%20Pro&callback=__jp5
+class importFeature(MarxanRESTHandler):
+    def get(self):
+        #validate the input arguments
+        _validateArguments(self.request.arguments, ['filename','name','description'])   
+        #import the shapefile
+        id = _importFeature(self.get_argument('filename'), self.get_argument('name'), self.get_argument('description'))
+        #set the response
+        self.send_response({'info': "File '" + self.get_argument('filename') + "' imported", 'file': self.get_argument('filename'), 'id': id})
+
 ####################################################################################################################################################################################################################################################################
 ## baseclass for handling WebSockets
 ####################################################################################################################################################################################################################################################################
@@ -643,14 +1134,16 @@ class MarxanWebSocketHandler(tornado.websocket.WebSocketHandler):
     def check_origin(self, origin):
         return True
 
-    #gets the folder paths for the user and optionally the project
+    #called when the websocket is opened - gets the folder paths for the user and optionally the project
     def open(self):
         #set the folder paths for the user and optionally project
-        _setFolderPaths(self)
+        _setFolderPaths(self, self.request.arguments)
+        #set the start time of the websocket
+        self.startTime = datetime.datetime.now()
 
     #sends the message with a timestamp
     def send_response(self, message):
-        message.update({'timestamp': datetime.datetime.now().strftime("%H:%M:%S.%f on %d/%m/%Y")})
+        message.update({'elapsedtime': str((datetime.datetime.now() - self.startTime).seconds) + " seconds"})
         self.write_message(message)
 
 ####################################################################################################################################################################################################################################################################
@@ -660,61 +1153,66 @@ class MarxanWebSocketHandler(tornado.websocket.WebSocketHandler):
 class QueryWebSocketHandler(MarxanWebSocketHandler):
     
     #required for asyncronous queries
-    def wait(self, conn):
+    def wait(self):
         while 1:
-            state = conn.poll()
-            if state == psycopg2.extensions.POLL_OK:
+            state = self.conn.poll()
+            if state == psycopg2.extensions.POLL_OK:      #0
                 break
-            elif state == psycopg2.extensions.POLL_WRITE:
-                select.select([], [conn.fileno()], [])
-            elif state == psycopg2.extensions.POLL_READ:
-                select.select([conn.fileno()], [], [])
+            elif state == psycopg2.extensions.POLL_WRITE: #2
+                select.select([], [self.conn.fileno()], [])
+            elif state == psycopg2.extensions.POLL_READ:  #1
+                select.select([self.conn.fileno()], [], [])
             else:
                 raise psycopg2.OperationalError("poll() returned %s" % state)
                 
     @gen.coroutine
     #runs a PostGIS query asynchronously, i.e. non-blocking
-    def executeQueryAsynchronously(self, sql):
+    def executeQueryAsynchronously(self, sql, data = None, startedMessage = "", processingMessage = "", finishingMessage = ""):
         try:
-            self.send_response({'info': "Started PostGIS query"})
+            self.send_response({'info': startedMessage, 'status':'Started'})
             #connect to postgis asyncronously
-            conn = psycopg2.connect("dbname='biopama' host='localhost' user='jrc' password='thargal88'", async = True)
+            self.conn = psycopg2.connect(CONNECTION_STRING, async = True)
             #wait for the connection to be ready
-            self.wait(conn)
+            self.wait()
             #get a cursor
-            cur = conn.cursor()
+            cur = self.conn.cursor()
+            #parameter bind if necessary
+            if data is not None:
+                sql = cur.mogrify(sql, data)
             #execute the query
             cur.execute(sql)
             #poll to get the state of the query
-            state = conn.poll()
+            state = self.conn.poll()
             #poll at regular intervals to see if the query has finished
             while (state != psycopg2.extensions.POLL_OK):
                 yield gen.sleep(1)
-                state = conn.poll()
-                self.send_response({'info': "Still processing"})
-            #get the column names for the query
-            columns = [desc[0] for desc in cur.description]
-            #get the query results
-            records = cur.fetchall()
-            #set the values on the current object
-            self.queryResults = {}
-            self.queryResults.update({'columns': columns, 'records': records})
+                state = self.conn.poll()
+                self.send_response({'info': processingMessage, 'status':'Running'})
+            #if the query returns data, then return the data
+            if cur.description is not None:
+                #get the column names for the query
+                columns = [desc[0] for desc in cur.description]
+                #get the query results
+                records = cur.fetchall()
+                #set the values on the current object
+                self.queryResults = {}
+                self.queryResults.update({'columns': columns, 'records': records})
+
         #handle any issues with the query syntax
         except (psycopg2.Error) as e:
-            self.send_response({'error': e.pgerror})
+            self.send_response({'error': e.pgerror, 'status':'Running'})
         #clean up code
         finally:
             cur.close()
-            conn.close()
-            self.send_response({'info': "Finished PostGIS query"})
-            # self.close()
+            self.conn.close()
+            self.send_response({'info': finishingMessage, 'status':'Finishing'})
 
 ####################################################################################################################################################################################################################################################################
 ## WebSocket subclasses
 ####################################################################################################################################################################################################################################################################
 
 #preprocesses the features by intersecting them with the planning units
-#wss://db-server-blishten.c9users.io:8081/marxan-server/preprocessFeature?user=andrew&project=Tonga%20marine%2030km2&planning_grid_name=pu_ton_marine_hexagons_30&feature_class_name=volcano&id=63408475
+#wss://db-server-blishten.c9users.io:8081/marxan-server/preprocessFeature?user=andrew&project=Tonga%20marine%2030km2&planning_grid_name=pu_ton_marine_hexagons_30&feature_class_name=volcano&alias=volcano&id=63408475
 class preprocessFeature(QueryWebSocketHandler):
 
     #run the preprocessing
@@ -722,15 +1220,15 @@ class preprocessFeature(QueryWebSocketHandler):
         #get the user folder and project folders
         super(preprocessFeature, self).open()
         try:
-            _validateArguments(self.request.arguments, ['user','project','id','feature_class_name','planning_grid_name'])    
+            _validateArguments(self.request.arguments, ['user','project','id','feature_class_name','alias','planning_grid_name'])    
         except (MarxanServicesError) as e:
-            self.send_response({'error': e.message})
+            self.send_response({'error': e.message, 'status':'Finished'})
         else:
             #get the project data
             _getProjectData(self)
             if (self.projectData["metadata"]["OLDVERSION"] == 'False'):
                 #new version of marxan - do the intersection
-                future = self.executeQueryAsynchronously("select * from marxan.get_pu_areas_for_interest_feature('" + self.get_argument('planning_grid_name') + "','" + self.get_argument('feature_class_name') + "');")
+                future = self.executeQueryAsynchronously("SELECT * FROM marxan.get_pu_areas_for_interest_feature(%s,%s);", [self.get_argument('planning_grid_name'),self.get_argument('feature_class_name')], "Preprocessing '" + self.get_argument('alias') + "'", "  Preprocessing..", "Finishing preprocessing")
                 future.add_done_callback(self.intersectionComplete)
             else:
                 #pass None as the Future object to the callback for the old version of marxan
@@ -742,8 +1240,8 @@ class preprocessFeature(QueryWebSocketHandler):
         d = {'amount':pandas.Series([], dtype='float64'), 'species':pandas.Series([], dtype='int64'), 'pu':pandas.Series([], dtype='int64')}
         emptyDataFrame = pandas.DataFrame(data=d)[['species', 'pu', 'amount']] #reorder the columns
         #get the intersection data
-        if (future):
-            #get the intersection data as a dataframe from the queryresults
+        if (future): #i.e. new version of marxan
+            #get the intersection data as a dataframe from the queryresults - TODO - this needs to be rewritten to be scalable - getting the records in this way fails when you have > 1000 records and you need to use a method that creates a tmp table - see preprocessPlanningUnits
             intersectionData = pandas.DataFrame.from_records(self.queryResults["records"], columns = self.queryResults["columns"])
         else:
             #old version of marxan so an empty dataframe
@@ -773,44 +1271,106 @@ class preprocessFeature(QueryWebSocketHandler):
             record = pandas.DataFrame({'id':speciesId, 'pu_area': [pu_area], 'pu_count': [pu_count]}).astype({'id': 'int', 'pu_area':'float', 'pu_count':'int'})
             _writeToDatFile(self.folder_input + FEATURE_PREPROCESSING_FILENAME, record)
         except (MarxanServicesError) as e:
-            self.send_response({'error': e.message})
+            self.send_response({'error': e.message, 'status':'Finished'})
         #update the input.dat file
-        _updateParameters(self.folder_project + "input.dat", {'PUVSPRNAME': 'puvspr.dat'})
+        _updateParameters(self.folder_project + PROJECT_DATA_FILENAME, {'PUVSPRNAME': 'puvspr.dat'})
         #set the response
-        self.send_response({'info': "Feature " + self.get_argument('feature_class_name') + " preprocessed", "feature_class_name": self.get_argument('feature_class_name'), "pu_area" : str(pu_area),"pu_count" : str(pu_count), "id":str(speciesId)})
+        self.send_response({'info': "Feature '" + self.get_argument('alias') + "' preprocessed", "feature_class_name": self.get_argument('feature_class_name'), "pu_area" : str(pu_area),"pu_count" : str(pu_count), "id":str(speciesId), 'status':'Finished'})
+        #close the websocket
+        self.close()
 
-#wss://db-server-blishten.c9users.io:8081/marxan-server/preprocessFeature?user=andrew&project=Tonga%20marine%2030km2&planning_grid_name=pu_ton_marine_hexagons_30&feature_class_name=volcano&id=63408475
-# class runMarxan(QueryWebSocketHandler):
-#     def open(self):
-#         #get the user folder and project folders
-#         super(runMarxan, self).open()
-#         try:    
-#             #set the current folder to the project folder so files can be found in the input.dat file
-#             os.chdir(self.folder_project)
-#             print self.folder_project
-#             #delete all of the current output files
-#             _deleteAllFiles(self.folder_output)
-#             #run marxan 
-#             self.send_response({'info': 'Marxan starting'})
-#             print 'Marxan starting'
-#             p = subprocess.call(MARXAN_EXECUTABLE, stdout=subprocess.PIPE) 
-#             print p
-#             print 'Marxan finished'
-#             self.send_response({'info': 'Marxan finished'})
-#         except:
-#             self.send_response({'error': sys.exc_info()[0]})
+#preprocesses the protected areas by intersecting them with the planning units
+#wss://db-server-blishten.c9users.io:8081/marxan-server/preprocessProtectedAreas?user=andrew&project=Tonga%20marine%2030km2&planning_grid_name=pu_ton_marine_hexagons_30
+class preprocessProtectedAreas(QueryWebSocketHandler):
 
+    #run the preprocessing
+    def open(self):
+        #get the user folder and project folders
+        super(preprocessProtectedAreas, self).open()
+        try:
+            _validateArguments(self.request.arguments, ['user','project','planning_grid_name'])    
+        except (MarxanServicesError) as e:
+            self.send_response({'error': e.message, 'status':'Finished'})
+        else:
+            #get the project data
+            _getProjectData(self)
+            if (self.projectData["metadata"]["OLDVERSION"] == 'False'):
+                #new version of marxan - do the intersection with the protected areas
+                future = self.executeQueryAsynchronously(sql.SQL("SELECT DISTINCT iucn_cat, grid.puid FROM (SELECT iucn_cat, geom FROM marxan.wdpa) AS wdpa, marxan.{} grid WHERE ST_Intersects(wdpa.geom, ST_Transform(grid.geometry, 4326)) ORDER BY 1,2;").format(sql.Identifier(self.get_argument('planning_grid_name'))), None, "Preprocessing protected areas", "  Preprocessing protected areas..", "Finishing preprocessing")
+                future.add_done_callback(self.preprocessProtectedAreasComplete)
+            else:
+                #pass None as the Future object to the callback for the old version of marxan
+                self.preprocessProtectedAreasComplete(None) 
+    
+    #callback which is called when the intersection has been done
+    def preprocessProtectedAreasComplete(self, future):
+        if (future): #i.e. new version of marxan
+            #get the intersection data as a dataframe from the queryresults
+            df = pandas.DataFrame.from_records(self.queryResults["records"], columns = self.queryResults["columns"])
+            #write the intersections to file
+            df.to_csv(self.folder_input + PROTECTED_AREA_INTERSECTIONS_FILENAME, index =False)
+            #get the data
+            _getProtectedAreaIntersectionsData(self)
+        #set the response
+        self.send_response({'info': self.protectedAreaIntersectionsData, 'status':'Finished'})
+    
+#preprocesses the planning units to get the boundary lengths where they intersect
+#wss://db-server-blishten.c9users.io:8081/marxan-server/preprocessPlanningUnits?user=andrew&project=Tonga%20marine%2030km2
+class preprocessPlanningUnits(QueryWebSocketHandler):
+
+    #run the preprocessing
+    def open(self):
+        #get the user folder and project folders
+        super(preprocessPlanningUnits, self).open()
+        try:
+            _validateArguments(self.request.arguments, ['user','project'])    
+        except (MarxanServicesError) as e:
+            self.send_response({'error': e.message, 'status':'Finished'})
+        else:
+            #get the project data
+            _getProjectData(self)
+            if (self.projectData["metadata"]["OLDVERSION"] == 'False'):
+                #new version of marxan - get the boundary lengths
+                PostGIS().execute("DROP TABLE IF EXISTS marxan.tmp;") 
+                future = self.executeQueryAsynchronously(sql.SQL("CREATE TABLE marxan.tmp AS SELECT DISTINCT a.puid id1, b.puid id2, ST_Length(ST_CollectionExtract(ST_Intersection(a.geometry, b.geometry), 2))/1000 boundary  FROM marxan.{0} a, marxan.{0} b  WHERE a.puid < b.puid AND ST_Touches(a.geometry, b.geometry);").format(sql.Identifier(self.projectData["metadata"]["PLANNING_UNIT_NAME"])), None, "Getting boundary lengths", "  Processing ..", "Finishing preprocessing")
+                future.add_done_callback(self.preprocessPlanningUnitsComplete)
+            else:
+                #pass None as the Future object to the callback for the old version of marxan
+                self.preprocessPlanningUnitsComplete(None) 
+    
+    #callback which is called when the boundary lengths have been calculated
+    def preprocessPlanningUnitsComplete(self, future):
+        try:
+            if (future): #i.e. new version of marxan
+                #delete the file if it already exists
+                if (os.path.exists(self.folder_input + BOUNDARY_LENGTH_FILENAME)):
+                    os.remove(self.folder_input + BOUNDARY_LENGTH_FILENAME)
+                #write the boundary lengths to file
+                postgis = PostGIS()
+                postgis.executeToText("COPY (SELECT * FROM marxan.tmp) TO STDOUT WITH CSV HEADER;", self.folder_input + BOUNDARY_LENGTH_FILENAME)
+                #delete the tmp table
+                postgis.execute("DROP TABLE IF EXISTS marxan.tmp;") 
+                #update the input.dat file
+                _updateParameters(self.folder_project + PROJECT_DATA_FILENAME, {'BOUNDNAME': 'bounds.dat'})
+                #set the response
+                self.send_response({'info': 'Boundary lengths calculated', 'status':'Finished'})
+        except Exception as e:
+            print e.message
+
+#wss://db-server-blishten.c9users.io:8081/marxan-server/runMarxan?user=andrew&project=Tonga%20marine%2030km2
+#starts a Marxan run on the server and streams back the output as websockets
 class runMarxan(MarxanWebSocketHandler):
     def open(self):
         super(runMarxan, self).open()
+        self.send_response({'info': "Running Marxan", 'status':'Started'})
         #set the current folder to the project folder so files can be found in the input.dat file
         os.chdir(self.folder_project)
         #delete all of the current output files
         _deleteAllFiles(self.folder_output)
         #run marxan - the Subprocess.STREAM option does not work on Windows - see here: https://www.tornadoweb.org/en/stable/process.html?highlight=Subprocess#tornado.process.Subprocess
-        self.app = Subprocess([MARXAN_EXECUTABLE + ";\n"], stdout=Subprocess.STREAM, stdin=subprocess.PIPE, shell=True)
+        self.app = Subprocess([MARXAN_EXECUTABLE], stdout=Subprocess.STREAM, stdin=subprocess.PIPE, shell=True)
         IOLoop.current().spawn_callback(self.stream_output)
-        self.app.stdin.write('\n') # to end the marxan process send ENTER to the stdin
+        self.app.stdin.write('\n') # to end the marxan process by sending ENTER to the stdin
 
     @gen.coroutine
     def stream_output(self):
@@ -818,20 +1378,34 @@ class runMarxan(MarxanWebSocketHandler):
             while True:
                 # line = yield self.app.stdout.read_bytes(4096)
                 line = yield self.app.stdout.read_bytes(4096, partial=True)
-                self.write_message(line)
-        except StreamClosedError as e:
-            print e.message
-    
+                self.send_response({'info':line, 'status':'Running'})
+        except StreamClosedError: #fired when the stream closes
+            self.send_response({'info': 'Run completed', 'status':'Finished'})
+            #close the websocket
+            self.close()
+
 ####################################################################################################################################################################################################################################################################
 ## tornado functions
 ####################################################################################################################################################################################################################################################################
 
 def make_app():
     return tornado.web.Application([
+        ("/marxan-server/createUser", createUser),
+        ("/marxan-server/createProject", createProject),
+        ("/marxan-server/deleteProject", deleteProject),
+        ("/marxan-server/cloneProject", cloneProject),
+        ("/marxan-server/renameProject", renameProject),
         ("/marxan-server/getCountries", getCountries),
+        ("/marxan-server/getPlanningUnitGrids", getPlanningUnitGrids),
+        ("/marxan-server/createPlanningUnitGrid", createPlanningUnitGrid),
+        ("/marxan-server/uploadTilesetToMapBox", uploadTilesetToMapBox),
+        ("/marxan-server/uploadShapefile", uploadShapefile),
+        ("/marxan-server/importFeature", importFeature),
         ("/marxan-server/validateUser", validateUser),
         ("/marxan-server/getUser", getUser),
+        ("/marxan-server/getUsers", getUsers),
         ("/marxan-server/getProject", getProject),
+        ("/marxan-server/getFeature", getFeature),
         ("/marxan-server/getSpeciesData", getSpeciesData),
         ("/marxan-server/getAllSpeciesData", getAllSpeciesData),
         ("/marxan-server/getSpeciesPreProcessingData", getSpeciesPreProcessingData),
@@ -843,14 +1417,29 @@ def make_app():
         ("/marxan-server/getSummedSolution", getSummedSolution),
         ("/marxan-server/getResults", getResults),
         ("/marxan-server/getProjects", getProjects),
-        ("/marxan-server/updateSpecFile", updateSpecFile),
+        ("/marxan-server/getSolution", getSolution),
+        ("/marxan-server/getMissingValues", getMissingValues),
         ("/marxan-server/preprocessFeature", preprocessFeature),
+        ("/marxan-server/preprocessPlanningUnits", preprocessPlanningUnits),
+        ("/marxan-server/preprocessProtectedAreas", preprocessProtectedAreas),
         ("/marxan-server/runMarxan", runMarxan),
+        ("/marxan-server/updateSpecFile", updateSpecFile),
+        ("/marxan-server/updatePUFile", updatePUFile),
+        ("/marxan-server/updateUserParameters", updateUserParameters),
+        ("/marxan-server/updateProjectParameters", updateProjectParameters)
     ])
 
 if __name__ == "__main__":
-    app = make_app()
-    app.listen(8081, '0.0.0.0')
-    #turn on tornado logging 
-    tornado.options.parse_command_line() 
-    tornado.ioloop.IOLoop.current().start()
+    try:
+        #test for prerequisites
+        if not os.path.exists(OGR2OGR_EXECUTABLE):
+            raise MarxanServicesError("The path to the ogr2ogr executable '" + OGR2OGR_EXECUTABLE + "' could not be found")
+        if not os.path.exists(MARXAN_EXECUTABLE):
+            raise MarxanServicesError("The path to the Marxan executable '" + MARXAN_EXECUTABLE + "' could not be found")
+        app = make_app()
+        app.listen(8081, '0.0.0.0')
+        #turn on tornado logging 
+        tornado.options.parse_command_line() 
+        tornado.ioloop.IOLoop.current().start()
+    except Exception as e:
+        print e.message

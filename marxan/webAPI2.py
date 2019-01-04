@@ -144,6 +144,7 @@ def getKeys(s):
 def puidsArrayToPuDatFormat(puid_array, pu_status):
 	return pandas.DataFrame([[int(i),pu_status] for i in puid_array], columns=['id','status_new']).astype({'id':'int64','status_new':'int64'})
 
+#updates the pu.dat file with the passed arrays of ids for the various statuses
 def updatePuValues(csvFile, status1_ids, status2_ids, status3_ids):
 	status1 = puidsArrayToPuDatFormat(status1_ids,1)
 	status2 = puidsArrayToPuDatFormat(status2_ids,2)
@@ -1470,7 +1471,6 @@ class importShapefile:
 				if len(files)>0:
 					[os.remove(f) for f in files]       
 			
-	
 				#if we want to dissolve the shapefile then do so now by querying the temporary feature class and outputting a new table with a single column called geometry in EPSG:3410
 				if params['DISSOLVE']=='true':
 					#create the feature class
