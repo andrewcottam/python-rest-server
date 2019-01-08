@@ -26,6 +26,8 @@ import sys
 import commands
 import zipfile
 import shutil
+import uuid
+import signal
 
 ####################################################################################################################################################################################################################################################################
 ## constant declarations
@@ -35,6 +37,7 @@ MARXAN_FOLDER = "/home/ubuntu/workspace/marxan/Marxan243/MarxanData_unix/"
 MARXAN_EXECUTABLE = MARXAN_FOLDER + "MarOpt_v243_Linux64"
 MARXAN_WEB_RESOURCES_FOLDER = MARXAN_FOLDER + "_marxan_web_resources/"
 START_PROJECT_FOLDER = MARXAN_WEB_RESOURCES_FOLDER + "Start project/"
+CLUMP_FOLDER = MARXAN_FOLDER + "_clumping/"
 OGR2OGR_EXECUTABLE = "/home/ubuntu/miniconda2/bin/ogr2ogr"
 MAPBOX_ACCESS_TOKEN = "sk.eyJ1IjoiYmxpc2h0ZW4iLCJhIjoiY2piNm1tOGwxMG9lajMzcXBlZDR4aWVjdiJ9.Z1Jq4UAgGpXukvnUReLO1g"
 EMPTY_PROJECT_TEMPLATE_FOLDER = "empty_project/"
@@ -45,7 +48,7 @@ PLANNING_UNITS_FILENAME ="pu.dat"
 SPEC_FILENAME ="spec.dat"
 BOUNDARY_LENGTH_FILENAME = "bounds.dat"
 BEST_SOLUTION_FILENAME = "output_mvbest.txt"
-OUTPUT_SUM_FILENAME = "output_sum.txt"
+OUTPUT_SUMMARY_FILENAME = "output_sum.txt"
 SUMMED_SOLUTION_FILENAME = "output_ssoln.txt"
 FEATURE_PREPROCESSING_FILENAME = "feature_preprocessing.dat"
 PROTECTED_AREA_INTERSECTIONS_FILENAME = "protected_area_intersections.dat"
@@ -260,16 +263,19 @@ def _getMarxanLog(obj):
 def _getBestSolution(obj):
     obj.bestSolution = _loadCSV(obj.folder_output + BEST_SOLUTION_FILENAME)
 
-def _getOutputSum(obj):
-    obj.outputSum = _loadCSV(obj.folder_output + OUTPUT_SUM_FILENAME)
+def _getOutputSummary(obj):
+    obj.outputSummary = _loadCSV(obj.folder_output + OUTPUT_SUMMARY_FILENAME)
 
 def _getSummedSolution(obj):
     df = _loadCSV(obj.folder_output + SUMMED_SOLUTION_FILENAME)
     obj.summedSolution = _normaliseDataFrame(df, "number", "planning_unit")
 
 def _getSolution(obj, solutionId):
-    df = _loadCSV(obj.folder_output + SOLUTION_FILE_PREFIX + "%05d" % int(solutionId) + ".txt")
-    obj.solution = _normaliseDataFrame(df, "solution", "planning_unit")
+    if os.path.exists(obj.folder_output + SOLUTION_FILE_PREFIX + "%05d" % int(solutionId) + ".txt"):
+        df = _loadCSV(obj.folder_output + SOLUTION_FILE_PREFIX + "%05d" % int(solutionId) + ".txt")
+        obj.solution = _normaliseDataFrame(df, "solution", "planning_unit")
+    else:
+        print "The solution no longer exists"
 
 def _getMissingValues(obj, solutionId):
     df = _loadCSV(obj.folder_output + MISSING_VALUES_FILE_PREFIX + "%05d" % int(solutionId) + ".txt")
@@ -785,6 +791,45 @@ class cloneProject(MarxanRESTHandler):
         #set the response
         self.send_response({'info': "Project '" + clonedName + "' created", 'name': clonedName})
 
+#creates n clones of the project with a range of BLM values in the _clumping folder
+#https://db-server-blishten.c9users.io:8081/marxan-server/createProjectGroup?user=andrew&project=Tonga%20marine%2030km2&copies=5&blmValues=0.1,0.2,0.3,0.4,0.5&callback=__jp15
+class createProjectGroup(MarxanRESTHandler):
+    def get(self):
+        #validate the input arguments
+        _validateArguments(self.request.arguments, ['user','project','copies','blmValues'])  
+        #get the BLM values as a list
+        blmValuesList = self.get_argument("blmValues").split(",")
+        #initialise the project name array
+        projects = []
+        #clone the users project folder n times
+        for i in range(int(self.get_argument("copies"))):
+            #get the project name
+            projectName = uuid.uuid4().hex
+            #add the project name to the array
+            projects.append({'projectName': projectName, 'clump': i})
+            shutil.copytree(self.folder_project, CLUMP_FOLDER + projectName)
+            #delete the contents of the output folder in that cloned project
+            _deleteAllFiles(CLUMP_FOLDER + projectName + os.sep + "output" + os.sep)
+            #update the BLM and NUMREP values in the project
+            _updateParameters(CLUMP_FOLDER + projectName + os.sep + PROJECT_DATA_FILENAME, {'BLM': blmValuesList[i], 'NUMREPS': '1'})
+        #set the response
+        self.send_response({'info': "Project group created", 'data': projects})
+
+#deletes a project cluster
+#https://db-server-blishten.c9users.io:8081/marxan-server/deleteProjects?projectNames=2dabf1b862da4c2e87b2cd9d8b38bb73,81eda0a43a3248a8b4881caae160667a,313b0d3f733142e3949cf6129855be19,739f40f4d1c94907b2aa814470bcd7f7,15210235bec341238a816ce43eb2b341&callback=__jp15
+class deleteProjects(MarxanRESTHandler):
+    def get(self):
+        #validate the input arguments
+        _validateArguments(self.request.arguments, ['projectNames'])  
+        #get the project names
+        projectNames = self.get_argument("projectNames").split(",")
+        #delete the folders
+        for projectName in projectNames:
+            if os.path.exists(CLUMP_FOLDER + projectName):
+                shutil.rmtree(CLUMP_FOLDER + projectName)        
+        #set the response
+        self.send_response({'info': "Projects deleted"})
+
 #renames a project
 #https://db-server-blishten.c9users.io:8081/marxan-server/renameProject?user=andrew&project=Tonga%20marine%2030km2&newName=Tonga%20marine%2030km&callback=__jp5
 class renameProject(MarxanRESTHandler):
@@ -968,17 +1013,16 @@ class getBestSolution(MarxanRESTHandler):
         #set the response
         self.send_response({"data": self.bestSolution.to_dict(orient="split")["data"]})
 
-#gets the output sum for the project
-#https://db-server-blishten.c9users.io:8081/marxan-server/getOutputSum?user=andrew&project=Tonga%20marine%2030km2&callback=__jp2
-class getOutputSum(MarxanRESTHandler):
+#gets the output summary for the project
+#https://db-server-blishten.c9users.io:8081/marxan-server/getOutputSummary?user=andrew&project=Tonga%20marine%2030km2&callback=__jp2
+class getOutputSummary(MarxanRESTHandler):
     def get(self):
         #validate the input arguments
         _validateArguments(self.request.arguments, ['user','project'])    
         #get the output sum
-        _getOutputSum(self)
-        print self.outputSum
+        _getOutputSummary(self)
         #set the response
-        self.send_response({"data": self.outputSum.to_dict(orient="split")["data"]})
+        self.send_response({"data": self.outputSummary.to_dict(orient="split")["data"]})
 
 #gets the summed solution for the project
 #https://db-server-blishten.c9users.io:8081/marxan-server/getSummedSolution?user=andrew&project=Tonga%20marine%2030km2&callback=__jp2
@@ -1002,7 +1046,7 @@ class getSolution(MarxanRESTHandler):
         #get the corresponding missing values file, e.g. output_mv00031.txt
         _getMissingValues(self, self.get_argument("solution"))
         #set the response
-        self.send_response({'solution': self.solution, 'mv': self.missingValues})
+        self.send_response({'solution': self.solution, 'mv': self.missingValues, 'user': self.get_argument("user"), 'project': self.get_argument("project")})
  
 #gets the missing values for a single solution
 #https://db-server-blishten.c9users.io:8081/marxan-server/getMissingValues?user=andrew&project=Tonga%20marine%2030km2&solution=1&callback=__jp7
@@ -1026,11 +1070,11 @@ class getResults(MarxanRESTHandler):
         #get the best solution
         _getBestSolution(self)
         #get the output sum
-        _getOutputSum(self)
+        _getOutputSummary(self)
         #get the summed solution
         _getSummedSolution(self)
         #set the response
-        self.send_response({'info':'Results loaded', 'log': self.marxanLog, 'mvbest': self.bestSolution.to_dict(orient="split")["data"], 'sum':self.outputSum.to_dict(orient="split")["data"], 'ssoln': self.summedSolution})
+        self.send_response({'info':'Results loaded', 'log': self.marxanLog, 'mvbest': self.bestSolution.to_dict(orient="split")["data"], 'summary':self.outputSummary.to_dict(orient="split")["data"], 'ssoln': self.summedSolution})
 
 #gets a list of projects for the user
 #https://db-server-blishten.c9users.io:8081/marxan-server/getProjects?user=andrew&callback=__jp2
@@ -1124,6 +1168,19 @@ class importFeature(MarxanRESTHandler):
         id = _importFeature(self.get_argument('filename'), self.get_argument('name'), self.get_argument('description'))
         #set the response
         self.send_response({'info': "File '" + self.get_argument('filename') + "' imported", 'file': self.get_argument('filename'), 'id': id})
+
+#kills a running marxan job
+#https://db-server-blishten.c9users.io:8081/marxan-server/stopMarxan?pid=12345&callback=__jp5
+class stopMarxan(MarxanRESTHandler):
+    def get(self):
+        #validate the input arguments
+        _validateArguments(self.request.arguments, ['pid'])   
+        try:
+            os.kill(int(self.get_argument('pid')), signal.SIGTERM)
+        except OSError:
+            raise MarxanServicesError("The PID does not exist")
+        else:
+            self.send_response({'info': "PID '" + self.get_argument('pid') + "' terminated"})
 
 ####################################################################################################################################################################################################################################################################
 ## baseclass for handling WebSockets
@@ -1368,7 +1425,10 @@ class runMarxan(MarxanWebSocketHandler):
         #delete all of the current output files
         _deleteAllFiles(self.folder_output)
         #run marxan - the Subprocess.STREAM option does not work on Windows - see here: https://www.tornadoweb.org/en/stable/process.html?highlight=Subprocess#tornado.process.Subprocess
-        self.app = Subprocess([MARXAN_EXECUTABLE], stdout=Subprocess.STREAM, stdin=subprocess.PIPE, shell=True)
+        #the "exec " in front allows you to get the pid of the child process, i.e. marxan, and therefore to be able to kill the process using os.kill(pid, signal.SIGTERM) instead of the tornado process - see here: https://stackoverflow.com/questions/4789837/how-to-terminate-a-python-subprocess-launched-with-shell-true/4791612#4791612
+        self.app = Subprocess(["exec " + MARXAN_EXECUTABLE], stdout=Subprocess.STREAM, stdin=subprocess.PIPE, shell=True)
+        #return the pid so that the process can be stopped
+        self.send_response({'pid': self.app.pid, 'status':'pid'})
         IOLoop.current().spawn_callback(self.stream_output)
         self.app.stdin.write('\n') # to end the marxan process by sending ENTER to the stdin
 
@@ -1380,7 +1440,7 @@ class runMarxan(MarxanWebSocketHandler):
                 line = yield self.app.stdout.read_bytes(4096, partial=True)
                 self.send_response({'info':line, 'status':'Running'})
         except StreamClosedError: #fired when the stream closes
-            self.send_response({'info': 'Run completed', 'status':'Finished'})
+            self.send_response({'info': 'Run completed', 'status': 'Finished', 'project': self.get_argument("project"), 'user': self.get_argument("user")})
             #close the websocket
             self.close()
 
@@ -1394,6 +1454,8 @@ def make_app():
         ("/marxan-server/createProject", createProject),
         ("/marxan-server/deleteProject", deleteProject),
         ("/marxan-server/cloneProject", cloneProject),
+        ("/marxan-server/createProjectGroup", createProjectGroup),
+        ("/marxan-server/deleteProjects", deleteProjects),
         ("/marxan-server/renameProject", renameProject),
         ("/marxan-server/getCountries", getCountries),
         ("/marxan-server/getPlanningUnitGrids", getPlanningUnitGrids),
@@ -1413,7 +1475,7 @@ def make_app():
         ("/marxan-server/getProtectedAreaIntersectionsData", getProtectedAreaIntersectionsData),
         ("/marxan-server/getMarxanLog", getMarxanLog),
         ("/marxan-server/getBestSolution", getBestSolution),
-        ("/marxan-server/getOutputSum", getOutputSum),
+        ("/marxan-server/getOutputSummary", getOutputSummary),
         ("/marxan-server/getSummedSolution", getSummedSolution),
         ("/marxan-server/getResults", getResults),
         ("/marxan-server/getProjects", getProjects),
@@ -1423,6 +1485,7 @@ def make_app():
         ("/marxan-server/preprocessPlanningUnits", preprocessPlanningUnits),
         ("/marxan-server/preprocessProtectedAreas", preprocessProtectedAreas),
         ("/marxan-server/runMarxan", runMarxan),
+        ("/marxan-server/stopMarxan", stopMarxan),
         ("/marxan-server/updateSpecFile", updateSpecFile),
         ("/marxan-server/updatePUFile", updatePUFile),
         ("/marxan-server/updateUserParameters", updateUserParameters),
