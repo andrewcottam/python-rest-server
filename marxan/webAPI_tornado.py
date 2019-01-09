@@ -275,7 +275,8 @@ def _getSolution(obj, solutionId):
         df = _loadCSV(obj.folder_output + SOLUTION_FILE_PREFIX + "%05d" % int(solutionId) + ".txt")
         obj.solution = _normaliseDataFrame(df, "solution", "planning_unit")
     else:
-        print "The solution no longer exists"
+        obj.solution = []
+        raise MarxanServicesError("Solution '" + str(solutionId) + "' in project '" + obj.get_argument('project') + "' no longer exists")
 
 def _getMissingValues(obj, solutionId):
     df = _loadCSV(obj.folder_output + MISSING_VALUES_FILE_PREFIX + "%05d" % int(solutionId) + ".txt")
@@ -289,16 +290,17 @@ def _getProjects(obj):
     project_folders.sort()
     projects = []
     #iterate through the project folders and get the parameters for each project to return
+    tmpObj = ExtendableObject()
     for dir in project_folders:
         #get the name of the folder 
         project = dir[:-1][dir[:-1].rfind("/")+1:]
         if (project[:2] != "__"): #folders beginning with __ are system folders
             #get the data from the input file for this project
-            obj.project = project
-            obj.folder_project = MARXAN_FOLDER + obj.user + os.sep + project + os.sep
-            _getProjectData(obj)
+            tmpObj.project = project
+            tmpObj.folder_project = MARXAN_FOLDER + obj.user + os.sep + project + os.sep
+            _getProjectData(tmpObj)
             #create a dict to save the data
-            projects.append({'name': project,'description': obj.projectData["metadata"]["DESCRIPTION"],'createdate': obj.projectData["metadata"]["CREATEDATE"],'oldVersion': obj.projectData["metadata"]["OLDVERSION"]})
+            projects.append({'name': project,'description': tmpObj.projectData["metadata"]["DESCRIPTION"],'createdate': tmpObj.projectData["metadata"]["CREATEDATE"],'oldVersion': tmpObj.projectData["metadata"]["OLDVERSION"]})
     obj.projects = projects
 
 #updates/creates the spec.dat file with the passed interest features
@@ -594,11 +596,14 @@ def _importFeature(filename, name, description):
     return id
     
 ####################################################################################################################################################################################################################################################################
-## error classes
+## generic classes
 ####################################################################################################################################################################################################################################################################
 
 class MarxanServicesError(Exception):
     """Exception Class that allows the Marxan Services REST Server to raise custom exceptions"""
+    pass
+
+class ExtendableObject(object):
     pass
 
 ####################################################################################################################################################################################################################################################################
@@ -775,7 +780,7 @@ class deleteProject(MarxanRESTHandler):
         #get the existing projects
         _getProjects(self)
         if len(self.projects) == 1:
-            raise MarxanServicesError("You cannot delete all projects")    
+            raise MarxanServicesError("You cannot delete all projects")   
         _deleteProject(self)
         #set the response
         self.send_response({'info': "Project '" + self.get_argument("project") + "' deleted", 'project': self.get_argument("project")})
@@ -1421,16 +1426,21 @@ class runMarxan(MarxanWebSocketHandler):
         super(runMarxan, self).open()
         self.send_response({'info': "Running Marxan", 'status':'Started'})
         #set the current folder to the project folder so files can be found in the input.dat file
-        os.chdir(self.folder_project)
-        #delete all of the current output files
-        _deleteAllFiles(self.folder_output)
-        #run marxan - the Subprocess.STREAM option does not work on Windows - see here: https://www.tornadoweb.org/en/stable/process.html?highlight=Subprocess#tornado.process.Subprocess
-        #the "exec " in front allows you to get the pid of the child process, i.e. marxan, and therefore to be able to kill the process using os.kill(pid, signal.SIGTERM) instead of the tornado process - see here: https://stackoverflow.com/questions/4789837/how-to-terminate-a-python-subprocess-launched-with-shell-true/4791612#4791612
-        self.app = Subprocess(["exec " + MARXAN_EXECUTABLE], stdout=Subprocess.STREAM, stdin=subprocess.PIPE, shell=True)
-        #return the pid so that the process can be stopped
-        self.send_response({'pid': self.app.pid, 'status':'pid'})
-        IOLoop.current().spawn_callback(self.stream_output)
-        self.app.stdin.write('\n') # to end the marxan process by sending ENTER to the stdin
+        if (os.path.exists(self.folder_project)):
+            os.chdir(self.folder_project)
+            #delete all of the current output files
+            _deleteAllFiles(self.folder_output)
+            #run marxan - the Subprocess.STREAM option does not work on Windows - see here: https://www.tornadoweb.org/en/stable/process.html?highlight=Subprocess#tornado.process.Subprocess
+            #the "exec " in front allows you to get the pid of the child process, i.e. marxan, and therefore to be able to kill the process using os.kill(pid, signal.SIGTERM) instead of the tornado process - see here: https://stackoverflow.com/questions/4789837/how-to-terminate-a-python-subprocess-launched-with-shell-true/4791612#4791612
+            self.app = Subprocess(["exec " + MARXAN_EXECUTABLE], stdout=Subprocess.STREAM, stdin=subprocess.PIPE, shell=True)
+            #return the pid so that the process can be stopped
+            self.send_response({'pid': self.app.pid, 'status':'pid'})
+            IOLoop.current().spawn_callback(self.stream_output)
+            self.app.stdin.write('\n') # to end the marxan process by sending ENTER to the stdin
+        else:
+            self.send_response({'error': "Project '" + self.get_argument("project") + "' does not exist", 'status': 'Finished', 'project': self.get_argument("project"), 'user': self.get_argument("user")})
+            #close the websocket
+            self.close()
 
     @gen.coroutine
     def stream_output(self):
