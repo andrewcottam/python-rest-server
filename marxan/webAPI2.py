@@ -1412,7 +1412,7 @@ class importShapefile:
 			params = getQueryStringParams(web.ctx.query[1:])
 			response = {}
 	
-			#error checking
+			#error checking 
 			if "FILENAME" not in params.keys():
 				raise MarxanServicesError("No shapefile filename parameter")
 			if "NAME" not in params.keys():

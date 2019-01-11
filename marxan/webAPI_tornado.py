@@ -1,5 +1,6 @@
 from tornado.iostream import StreamClosedError
 from tornado.process import Subprocess
+from tornado.log import LogFormatter
 from tornado.ioloop import IOLoop
 from tornado import concurrent
 from tornado import gen
@@ -37,10 +38,10 @@ MARXAN_FOLDER = "/home/ubuntu/workspace/marxan/Marxan243/MarxanData_unix/"
 MARXAN_EXECUTABLE = MARXAN_FOLDER + "MarOpt_v243_Linux64"
 MARXAN_WEB_RESOURCES_FOLDER = MARXAN_FOLDER + "_marxan_web_resources/"
 START_PROJECT_FOLDER = MARXAN_WEB_RESOURCES_FOLDER + "Start project/"
+EMPTY_PROJECT_TEMPLATE_FOLDER = MARXAN_WEB_RESOURCES_FOLDER + "empty_project/"
 CLUMP_FOLDER = MARXAN_FOLDER + "_clumping/"
 OGR2OGR_EXECUTABLE = "/home/ubuntu/miniconda2/bin/ogr2ogr"
 MAPBOX_ACCESS_TOKEN = "sk.eyJ1IjoiYmxpc2h0ZW4iLCJhIjoiY2piNm1tOGwxMG9lajMzcXBlZDR4aWVjdiJ9.Z1Jq4UAgGpXukvnUReLO1g"
-EMPTY_PROJECT_TEMPLATE_FOLDER = "empty_project/"
 USER_DATA_FILENAME = "user.dat"
 PROJECT_DATA_FILENAME = "input.dat"
 OUTPUT_LOG_FILENAME = "output_log.dat"
@@ -91,7 +92,7 @@ def _createProject(obj, name):
     if os.path.exists(obj.folder_user + name):
         raise MarxanServicesError("The project '" + name + "' already exists")
     #copy the _project_template folder to the new location
-    _copyDirectory(MARXAN_WEB_RESOURCES_FOLDER + EMPTY_PROJECT_TEMPLATE_FOLDER, obj.folder_user + name)
+    _copyDirectory(EMPTY_PROJECT_TEMPLATE_FOLDER, obj.folder_user + name)
     #set the paths to this project in the passed object - the arguments are normally passed as lists in tornado.get_argument
     _setFolderPaths(obj, {'user': [obj.user], 'project': [name]})
 
@@ -213,7 +214,8 @@ def _getSpeciesData(obj):
         output_df['description'] = "No description"
         output_df['creation_date'] = "Unknown"
         output_df['area'] = -1
-        output_df = output_df[["alias", "feature_class_name", "description", "creation_date", "area", "prop", "spf", "oid"]]
+        output_df['tilesetid'] = None
+        output_df = output_df[["alias", "feature_class_name", "description", "creation_date", "area", "tilesetid", "prop", "spf", "oid"]]
     else:
         #get the postgis feature data
         df2 = PostGIS().getDataFrame("select * from marxan.get_interest_features()")
@@ -231,7 +233,7 @@ def _getFeature(obj, oid):
 
 #get all species information from the PostGIS database
 def _getAllSpeciesData(obj):
-    obj.allSpeciesData = PostGIS().getDataFrame("SELECT oid::integer as id, creation_date::text, feature_class_name, alias, _area area, description FROM marxan.metadata_interest_features order by alias;")
+    obj.allSpeciesData = PostGIS().getDataFrame("SELECT oid::integer as id, creation_date::text, feature_class_name, alias, _area area, description, tilesetid FROM marxan.metadata_interest_features order by alias;")
 
 #get the information about which species have already been preprocessed
 def _getSpeciesPreProcessingData(obj):
@@ -532,11 +534,13 @@ def _createZipfile(lstFileNames, folder, zipfilename):
             arcname = os.path.split(f)[1]
             myzip.write(f,arcname)
 
-#deletes a zip file and the archive files, e.g. deleteZippedShapefile(MARXAN_FOLDER, "pngprov")
-def _deleteZippedShapefile(folder, archivename):
+#deletes a zip file and the archive files, e.g. deleteZippedShapefile(MARXAN_FOLDER, "pngprovshapes.zip","pngprov")
+def _deleteZippedShapefile(folder, zipfile, archivename):
     files = glob.glob(folder + archivename + '.*')
     if len(files)>0:
-        [os.remove(f) for f in files if f[-3:] in ['shx','shp','xml','sbx','prj','sbn','zip','dbf','cpg']]       
+        [os.remove(f) for f in files if f[-3:] in ['shx','shp','xml','sbx','prj','sbn','zip','dbf','cpg','qpj']]       
+    if (os.path.exists(folder + zipfile)):
+        os.remove(folder + zipfile)
 
 #unzips a zip file
 def _unzipFile(filename):
@@ -573,28 +577,43 @@ def _uploadTilesetToMapbox(feature_class_name, mapbox_layer_name):
     #upload to mapbox
     uploadId = _uploadTileset(zipfilename, feature_class_name)
     #delete the temporary shapefile file and zip file
-    _deleteZippedShapefile(MARXAN_FOLDER, feature_class_name)
+    _deleteZippedShapefile(MARXAN_FOLDER, feature_class_name + ".zip", feature_class_name)
     return uploadId
     
 #imports the feature from a zipped shapefile (given by filename)
 def _importFeature(filename, name, description):
     #unzip the shapefile
     rootfilename = _unzipFile(filename) 
-    #import the file into PostGIS
+    #import the shapefile into PostGIS
     postgis = PostGIS()
     postgis.importShapefile(rootfilename + ".shp", "undissolved", "EPSG:3410")
     #delete the shapefile and the zip file
-    _deleteZippedShapefile(MARXAN_FOLDER, rootfilename)
+    _deleteZippedShapefile(MARXAN_FOLDER, filename, rootfilename)
     #dissolve the feature class
     postgis.execute(sql.SQL("SELECT ST_Union(wkb_geometry) geometry INTO marxan.{} FROM marxan.undissolved;").format(sql.Identifier(rootfilename)))   
     #create an index
-    postgis.execute(sql.SQL("CREATE INDEX _gix ON marxan.{} USING GIST (geometry);").format(sql.Identifier(rootfilename)))
+    postgis.execute(sql.SQL("CREATE INDEX idx_" + uuid.uuid4().hex + " ON marxan.{} USING GIST (geometry);").format(sql.Identifier(rootfilename)))
     #drop the undissolved feature class
     postgis.execute("DROP TABLE IF EXISTS marxan.undissolved;") 
     #create a record for this new feature in the metadata_interest_features table
     id = postgis.execute(sql.SQL("INSERT INTO marxan.metadata_interest_features SELECT %s, %s, %s, now(), sub._area FROM (SELECT ST_Area(geometry) _area FROM marxan.{}) AS sub RETURNING oid;").format(sql.Identifier(rootfilename)), [rootfilename, name, description], "One")[0]
     return id
-    
+
+#imports the planning unit grid from a zipped shapefile (given by filename) and returns the feature class name
+def _importPlanningUnitGrid(filename, name, description):
+    #unzip the shapefile
+    rootfilename = _unzipFile(filename) 
+    #import the shapefile into PostGIS
+    postgis = PostGIS()
+    postgis.importShapefile(rootfilename + ".shp", rootfilename, "EPSG:3410")
+    #delete the shapefile and the zip file
+    _deleteZippedShapefile(MARXAN_FOLDER, filename, rootfilename)
+    #create an index
+    postgis.execute(sql.SQL("CREATE INDEX idx_" + uuid.uuid4().hex + " ON marxan.{} USING GIST (wkb_geometry);").format(sql.Identifier(rootfilename)))
+    #create a record for this new feature in the metadata_planning_units table
+    feature_class_name = postgis.execute("INSERT INTO marxan.metadata_planning_units(feature_class_name,alias,description,creation_date) VALUES (%s,%s,%s,now()) RETURNING feature_class_name;", [rootfilename, name, description], "One")[0]
+    return feature_class_name
+
 ####################################################################################################################################################################################################################################################################
 ## generic classes
 ####################################################################################################################################################################################################################################################################
@@ -658,8 +677,9 @@ class PostGIS():
             elif numberToFetch == "All":
                 records = self.cursor.fetchall()
             return records
-        except:
+        except Exception as e:
             self._cleanup()
+            raise MarxanServicesError(e.message)
     
     #executes a query and writes the results to a text file
     def executeToText(self, sql, filename):
@@ -669,6 +689,7 @@ class PostGIS():
                 self.connection.commit()
         except Exception as e:
             self._cleanup()
+            raise MarxanServicesError(e.message)
         
     #imports a shapefile into PostGIS
     def importShapefile(self, shapefile, feature_class_name, epsgCode):
@@ -682,8 +703,9 @@ class PostGIS():
             #check for errors
             if (output != ''):
                 raise MarxanServicesError("Error importing shapefile: " + output)
-        except:
+        except Exception as e:
             self._cleanup()
+            raise MarxanServicesError(e.message)
                 
     def __del__(self):
         self._cleanup()
@@ -716,7 +738,6 @@ class MarxanRESTHandler(tornado.web.RequestHandler):
             content = json.dumps(response)
         #sometimes the Marxan log causes json encoding issues
         except (UnicodeDecodeError) as e: 
-            logging.error("UnicodeDecodeError")
             if 'log' in response.keys():
                 response.update({"log": "Server warning: Unable to encode the Marxan log. <br/>" + repr(e), "warning": "Unable to encode the Marxan log"})
                 content = json.dumps(response)        
@@ -733,6 +754,7 @@ class MarxanRESTHandler(tornado.web.RequestHandler):
             for line in traceback.format_exception(*kwargs["exc_info"]):
                 trace = trace + line
             lastLine = traceback.format_exception(*kwargs["exc_info"])[len(traceback.format_exception(*kwargs["exc_info"]))-1]
+            # logging.error(lastLine)
             self.set_status(200)
             self.send_response({"error":lastLine, "trace" : trace})
             self.finish()
@@ -771,6 +793,40 @@ class createProject(MarxanRESTHandler):
         #set the response
         self.send_response({'info': "Project '" + self.get_argument('project') + "' created", 'name': self.get_argument('project')})
 
+#creates a project from the import wizard
+#POST ONLY
+class createImportProject(MarxanRESTHandler):
+    def post(self):
+        #validate the input arguments
+        _validateArguments(self.request.arguments, ['user','project','description'])  
+        #create the empty project folder
+        _createProject(self, self.get_argument('project'))
+        #update the projects parameters
+        _updateParameters(self.folder_project + PROJECT_DATA_FILENAME, {'DESCRIPTION': self.get_argument('description'), 'CREATEDATE': datetime.datetime.now().strftime("%a, %d %b %Y %H:%M:%S")})
+        #set the response
+        self.send_response({'info': "Project '" + self.get_argument('project') + "' created", 'name': self.get_argument('project')})
+
+#updates a project from the Marxan old version to the new version
+#https://db-server-blishten.c9users.io:8081/marxan-server/updateProject?user=andrew&project=test2&callback=__jp7
+class updateProject(MarxanRESTHandler):
+    def get(self):
+        #validate the input arguments
+        _validateArguments(self.request.arguments, ['user','project'])  
+        #get the projects existing data from the input.dat file
+        old = _readFile(self.folder_project + PROJECT_DATA_FILENAME)
+        #get an empty projects data
+        new = _readFile(EMPTY_PROJECT_TEMPLATE_FOLDER + PROJECT_DATA_FILENAME)
+        #everything from the 'DESCRIPTION No description' needs to be added
+        pos = new.find("DESCRIPTION No description")
+        if pos > -1:
+            newText = new[pos:]
+            old = old + "\n" + newText
+            _writeFile(self.folder_project + PROJECT_DATA_FILENAME, old)
+        else:
+            raise MarxanServicesError("Unable to update the old version of Marxan to the new one")
+        #set the response
+        self.send_response({'info': "Project '" + self.get_argument("project") + "' updated", 'project': self.get_argument("project")})
+
 #deletes a project
 #https://db-server-blishten.c9users.io:8081/marxan-server/deleteProject?user=andrew&project=test2&callback=__jp7
 class deleteProject(MarxanRESTHandler):
@@ -783,7 +839,7 @@ class deleteProject(MarxanRESTHandler):
             raise MarxanServicesError("You cannot delete all projects")   
         _deleteProject(self)
         #set the response
-        self.send_response({'info': "Project '" + self.get_argument("project") + "' deleted", 'project': self.get_argument("project")})
+        self.send_response({'info': "Project '" + self.get_argument("project") + "' updated", 'project': self.get_argument("project")})
 
 #clones the project
 #https://db-server-blishten.c9users.io:8081/marxan-server/cloneProject?user=andrew&project=Tonga%20marine%2030km2&callback=__jp15
@@ -944,7 +1000,7 @@ class getFeature(MarxanRESTHandler):
         self.send_response({"data": self.data.to_dict(orient="records")})
 
 #gets species information for a specific project from the spec.dat file
-#https://db-server-blishten.c9users.io:8081/marxan-server/getSpeciesData?user=andrew&project=Tonga%20marine%2030km2&callback=__jp2
+#https://db-server-blishten.c9users.io:8081/marxan-server/getSpeciesData?user=andrew&project=Tonga%20marine%2030Km2&callback=__jp3
 class getSpeciesData(MarxanRESTHandler):
     def get(self):
         #validate the input arguments
@@ -1163,6 +1219,17 @@ class uploadShapefile(MarxanRESTHandler):
         #set the response
         self.send_response({'info': "File '" + self.get_argument('filename') + "' uploaded", 'file': self.get_argument('filename')})
         
+#saves an uploaded file to the filename - 3 input parameters: user, project, filename (relative) and the file itself as a request file
+#POST ONLY 
+class uploadFile(MarxanRESTHandler):
+    def post(self):
+        #validate the input arguments
+        _validateArguments(self.request.arguments, ['user','project','filename'])   
+        #write the file to the server
+        _writeFile(self.folder_project + self.get_argument('filename'), self.request.files['value'][0].body)
+        #set the response
+        self.send_response({'info': "File '" + self.get_argument('filename') + "' uploaded", 'file': self.get_argument('filename')})
+            
 #imports a shapefile which has been uploaded to the marxan root folder into PostGIS as a new feature dataset
 #https://db-server-blishten.c9users.io:8081/marxan-server/importFeature?filename=netafu.zip&name=Netafu%20island%20habitat&description=Digitised%20in%20ArcGIS%20Pro&callback=__jp5
 class importFeature(MarxanRESTHandler):
@@ -1173,6 +1240,17 @@ class importFeature(MarxanRESTHandler):
         id = _importFeature(self.get_argument('filename'), self.get_argument('name'), self.get_argument('description'))
         #set the response
         self.send_response({'info': "File '" + self.get_argument('filename') + "' imported", 'file': self.get_argument('filename'), 'id': id})
+
+#imports a zipped planning unit shapefile which has been uploaded to the marxan root folder into PostGIS as a planning unit grid feature class
+#https://db-server-blishten.c9users.io:8081/marxan-server/importPlanningUnitGrid?filename=pu_sample.zip&name=pu_test&description=wibble&callback=__jp5
+class importPlanningUnitGrid(MarxanRESTHandler):
+    def get(self):
+        #validate the input arguments
+        _validateArguments(self.request.arguments, ['filename','name','description'])   
+        #import the shapefile
+        feature_class_name = _importPlanningUnitGrid(self.get_argument('filename'), self.get_argument('name'), self.get_argument('description'))
+        #set the response
+        self.send_response({'info': "File '" + self.get_argument('filename') + "' imported", 'feature_class_name': feature_class_name})
 
 #kills a running marxan job
 #https://db-server-blishten.c9users.io:8081/marxan-server/stopMarxan?pid=12345&callback=__jp5
@@ -1462,6 +1540,8 @@ def make_app():
     return tornado.web.Application([
         ("/marxan-server/createUser", createUser),
         ("/marxan-server/createProject", createProject),
+        ("/marxan-server/createImportProject", createImportProject),
+        ("/marxan-server/updateProject", updateProject),
         ("/marxan-server/deleteProject", deleteProject),
         ("/marxan-server/cloneProject", cloneProject),
         ("/marxan-server/createProjectGroup", createProjectGroup),
@@ -1472,7 +1552,9 @@ def make_app():
         ("/marxan-server/createPlanningUnitGrid", createPlanningUnitGrid),
         ("/marxan-server/uploadTilesetToMapBox", uploadTilesetToMapBox),
         ("/marxan-server/uploadShapefile", uploadShapefile),
+        ("/marxan-server/uploadFile", uploadFile),
         ("/marxan-server/importFeature", importFeature),
+        ("/marxan-server/importPlanningUnitGrid", importPlanningUnitGrid),
         ("/marxan-server/validateUser", validateUser),
         ("/marxan-server/getUser", getUser),
         ("/marxan-server/getUsers", getUsers),
@@ -1504,6 +1586,16 @@ def make_app():
 
 if __name__ == "__main__":
     try:
+        #turn on tornado logging 
+        tornado.options.parse_command_line() 
+        # create an instance of tornado formatter
+        my_log_formatter = LogFormatter(fmt='%(color)s[%(levelname)1.1s %(asctime)s.%(msecs)03d]%(end_color)s %(message)s', datefmt='%d-%m-%y %H:%M:%S', color=True)
+        # get the parent logger of all tornado loggers 
+        root_logger = logging.getLogger()
+        # set your format to root_logger
+        root_streamhandler = root_logger.handlers[0]
+        root_streamhandler.setFormatter(my_log_formatter)
+        # logging.disable(logging.ERROR)
         #test for prerequisites
         if not os.path.exists(OGR2OGR_EXECUTABLE):
             raise MarxanServicesError("The path to the ogr2ogr executable '" + OGR2OGR_EXECUTABLE + "' could not be found")
@@ -1511,8 +1603,6 @@ if __name__ == "__main__":
             raise MarxanServicesError("The path to the Marxan executable '" + MARXAN_EXECUTABLE + "' could not be found")
         app = make_app()
         app.listen(8081, '0.0.0.0')
-        #turn on tornado logging 
-        tornado.options.parse_command_line() 
         tornado.ioloop.IOLoop.current().start()
     except Exception as e:
         print e.message
