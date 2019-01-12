@@ -86,6 +86,27 @@ def _getUsers():
         users.remove("output")
     return [u for u in users if u[:1] != "_"]
     
+#gets the projects for the current user
+def _getProjects(obj):
+    #get a list of folders underneath the users home folder
+    project_folders = glob.glob(MARXAN_FOLDER + obj.user + os.sep + "*/")
+    #sort the folders
+    project_folders.sort()
+    projects = []
+    #iterate through the project folders and get the parameters for each project to return
+    tmpObj = ExtendableObject()
+    for dir in project_folders:
+        #get the name of the folder 
+        project = dir[:-1][dir[:-1].rfind("/")+1:]
+        if (project[:2] != "__"): #folders beginning with __ are system folders
+            #get the data from the input file for this project
+            tmpObj.project = project
+            tmpObj.folder_project = MARXAN_FOLDER + obj.user + os.sep + project + os.sep
+            _getProjectData(tmpObj)
+            #create a dict to save the data
+            projects.append({'name': project,'description': tmpObj.projectData["metadata"]["DESCRIPTION"],'createdate': tmpObj.projectData["metadata"]["CREATEDATE"],'oldVersion': tmpObj.projectData["metadata"]["OLDVERSION"]})
+    obj.projects = projects
+
 #creates a new empty project with the passed parameters
 def _createProject(obj, name):
     #make sure the project does not already exist
@@ -284,27 +305,6 @@ def _getMissingValues(obj, solutionId):
     df = _loadCSV(obj.folder_output + MISSING_VALUES_FILE_PREFIX + "%05d" % int(solutionId) + ".txt")
     obj.missingValues = df.to_dict(orient="split")["data"]
 
-#gets the projects for the current user
-def _getProjects(obj):
-    #get a list of folders underneath the users home folder
-    project_folders = glob.glob(MARXAN_FOLDER + obj.user + os.sep + "*/")
-    #sort the folders
-    project_folders.sort()
-    projects = []
-    #iterate through the project folders and get the parameters for each project to return
-    tmpObj = ExtendableObject()
-    for dir in project_folders:
-        #get the name of the folder 
-        project = dir[:-1][dir[:-1].rfind("/")+1:]
-        if (project[:2] != "__"): #folders beginning with __ are system folders
-            #get the data from the input file for this project
-            tmpObj.project = project
-            tmpObj.folder_project = MARXAN_FOLDER + obj.user + os.sep + project + os.sep
-            _getProjectData(tmpObj)
-            #create a dict to save the data
-            projects.append({'name': project,'description': tmpObj.projectData["metadata"]["DESCRIPTION"],'createdate': tmpObj.projectData["metadata"]["CREATEDATE"],'oldVersion': tmpObj.projectData["metadata"]["OLDVERSION"]})
-    obj.projects = projects
-
 #updates/creates the spec.dat file with the passed interest features
 def _updateSpeciesFile(obj, interest_features, target_values, spf_values, create = False):
     #get the features to create/update as a list of integer ids
@@ -337,6 +337,8 @@ def _updateSpeciesFile(obj, interest_features, target_values, spf_values, create
         if i not in removedIds:
             records.append({'id': str(ids[i]), 'prop': str(float(props[i])/100), 'spf': spfs[i]})
     df = pandas.DataFrame(records)
+    #sort the records by the id fied
+    df = df.sort_values(by=['id'])
     #write the data to file
     _writeCSV(obj, "SPECNAME", df)
 
@@ -374,6 +376,8 @@ def _updatePuFile(obj, status1_ids, status2_ids, status3_ids):
     df.rename(columns={'status_final':'status'}, inplace=True)
     #set the datatypes
     df = df.astype({'id':'int64','cost':'int64','status':'int64'})
+    #sort the records by the id fied
+    df = df.sort_values(by=['id'])
     #write to file
     _writeCSV(obj, "PUNAME", df)
     
@@ -588,6 +592,7 @@ def _importFeature(filename, name, description):
     postgis = PostGIS()
     postgis.importShapefile(rootfilename + ".shp", "undissolved", "EPSG:3410")
     #delete the shapefile and the zip file
+    #TODO: _deleteZippedShapefile is cleanup code and wherever it occurs it should always be run even if an exception occurs
     _deleteZippedShapefile(MARXAN_FOLDER, filename, rootfilename)
     #dissolve the feature class
     postgis.execute(sql.SQL("SELECT ST_Union(wkb_geometry) geometry INTO marxan.{} FROM marxan.undissolved;").format(sql.Identifier(rootfilename)))   
@@ -599,20 +604,22 @@ def _importFeature(filename, name, description):
     id = postgis.execute(sql.SQL("INSERT INTO marxan.metadata_interest_features SELECT %s, %s, %s, now(), sub._area FROM (SELECT ST_Area(geometry) _area FROM marxan.{}) AS sub RETURNING oid;").format(sql.Identifier(rootfilename)), [rootfilename, name, description], "One")[0]
     return id
 
-#imports the planning unit grid from a zipped shapefile (given by filename) and returns the feature class name
+#imports the planning unit grid from a zipped shapefile (given by filename) and starts the upload to Mapbox
 def _importPlanningUnitGrid(filename, name, description):
     #unzip the shapefile
     rootfilename = _unzipFile(filename) 
     #import the shapefile into PostGIS
     postgis = PostGIS()
     postgis.importShapefile(rootfilename + ".shp", rootfilename, "EPSG:3410")
-    #delete the shapefile and the zip file
-    _deleteZippedShapefile(MARXAN_FOLDER, filename, rootfilename)
     #create an index
     postgis.execute(sql.SQL("CREATE INDEX idx_" + uuid.uuid4().hex + " ON marxan.{} USING GIST (wkb_geometry);").format(sql.Identifier(rootfilename)))
     #create a record for this new feature in the metadata_planning_units table
     feature_class_name = postgis.execute("INSERT INTO marxan.metadata_planning_units(feature_class_name,alias,description,creation_date) VALUES (%s,%s,%s,now()) RETURNING feature_class_name;", [rootfilename, name, description], "One")[0]
-    return feature_class_name
+    #upload to mapbox
+    uploadId = _uploadTileset(MARXAN_FOLDER + filename, rootfilename)
+    #delete the shapefile and the zip file
+    _deleteZippedShapefile(MARXAN_FOLDER, filename, rootfilename)
+    return {'feature_class_name': feature_class_name, 'uploadId': uploadId}
 
 ####################################################################################################################################################################################################################################################################
 ## generic classes
@@ -807,8 +814,8 @@ class createImportProject(MarxanRESTHandler):
         self.send_response({'info': "Project '" + self.get_argument('project') + "' created", 'name': self.get_argument('project')})
 
 #updates a project from the Marxan old version to the new version
-#https://db-server-blishten.c9users.io:8081/marxan-server/updateProject?user=andrew&project=test2&callback=__jp7
-class updateProject(MarxanRESTHandler):
+#https://db-server-blishten.c9users.io:8081/marxan-server/upgradeProject?user=andrew&project=test2&callback=__jp7
+class upgradeProject(MarxanRESTHandler):
     def get(self):
         #validate the input arguments
         _validateArguments(self.request.arguments, ['user','project'])  
@@ -839,7 +846,7 @@ class deleteProject(MarxanRESTHandler):
             raise MarxanServicesError("You cannot delete all projects")   
         _deleteProject(self)
         #set the response
-        self.send_response({'info': "Project '" + self.get_argument("project") + "' updated", 'project': self.get_argument("project")})
+        self.send_response({'info': "Project '" + self.get_argument("project") + "' deleted", 'project': self.get_argument("project")})
 
 #clones the project
 #https://db-server-blishten.c9users.io:8081/marxan-server/cloneProject?user=andrew&project=Tonga%20marine%2030km2&callback=__jp15
@@ -1248,9 +1255,9 @@ class importPlanningUnitGrid(MarxanRESTHandler):
         #validate the input arguments
         _validateArguments(self.request.arguments, ['filename','name','description'])   
         #import the shapefile
-        feature_class_name = _importPlanningUnitGrid(self.get_argument('filename'), self.get_argument('name'), self.get_argument('description'))
+        data = _importPlanningUnitGrid(self.get_argument('filename'), self.get_argument('name'), self.get_argument('description'))
         #set the response
-        self.send_response({'info': "File '" + self.get_argument('filename') + "' imported", 'feature_class_name': feature_class_name})
+        self.send_response({'info': "File '" + self.get_argument('filename') + "' imported", 'feature_class_name': data['feature_class_name'], 'uploadId': data['uploadId']})
 
 #kills a running marxan job
 #https://db-server-blishten.c9users.io:8081/marxan-server/stopMarxan?pid=12345&callback=__jp5
@@ -1399,6 +1406,8 @@ class preprocessFeature(QueryWebSocketHandler):
         df = df[~df.species.isin([speciesId])]
         #append the intersection data to the existing data
         df = df.append(intersectionData)
+        #sort the values by the species column
+        df = df.sort_values(by=['species'])
         try: 
             #write the data to the PUVSPR.dat file
             _writeCSV(self, "PUVSPRNAME", df)
@@ -1541,7 +1550,7 @@ def make_app():
         ("/marxan-server/createUser", createUser),
         ("/marxan-server/createProject", createProject),
         ("/marxan-server/createImportProject", createImportProject),
-        ("/marxan-server/updateProject", updateProject),
+        ("/marxan-server/upgradeProject", upgradeProject),
         ("/marxan-server/deleteProject", deleteProject),
         ("/marxan-server/cloneProject", cloneProject),
         ("/marxan-server/createProjectGroup", createProjectGroup),
