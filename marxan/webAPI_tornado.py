@@ -46,6 +46,7 @@ USER_DATA_FILENAME = "user.dat"
 PROJECT_DATA_FILENAME = "input.dat"
 OUTPUT_LOG_FILENAME = "output_log.dat"
 PLANNING_UNITS_FILENAME ="pu.dat"
+PUVSPR_FILENAME = "puvspr.dat"
 SPEC_FILENAME ="spec.dat"
 BOUNDARY_LENGTH_FILENAME = "bounds.dat"
 BEST_SOLUTION_FILENAME = "output_mvbest.txt"
@@ -490,6 +491,15 @@ def _normaliseDataFrame(df, columnToNormaliseBy, puidColumnName):
     response = [[g, df[puidColumnName][groups[g]].values.tolist()] for g in groups if g not in [0]]
     return response
 
+#gets the statistics for a species from the puvspr.dat file, i.e. count and area, as a dataframe record
+def _getPuvsprStats(df, speciesId):
+    #get the count of intersecting planning units
+    pu_count = df[df.species.isin([speciesId])].agg({'pu' : ['count']})['pu'].iloc[0]
+    #get the total area of the feature across all planning units
+    pu_area = df[df.species.isin([speciesId])].agg({'amount': ['sum']})['amount'].iloc[0]
+    #return the pu_area and pu_count to the preprocessing.dat file 
+    return pandas.DataFrame({'id':speciesId, 'pu_area': [pu_area], 'pu_count': [pu_count]}).astype({'id': 'int', 'pu_area':'float', 'pu_count':'int'})
+            
 #deletes the records in the text file that have id values that match the passed ids
 def _deleteRecordsInTextFile(filename, id_columnname, ids, write_index):
     if (filename) and (os.path.exists(filename)):
@@ -620,7 +630,20 @@ def _importPlanningUnitGrid(filename, name, description):
     #delete the shapefile and the zip file
     _deleteZippedShapefile(MARXAN_FOLDER, filename, rootfilename)
     return {'feature_class_name': feature_class_name, 'uploadId': uploadId}
-
+    
+#populates the data in the feature_preprocessing.dat file from an existing puvspr.dat file, e.g. after an import from an old version of Marxan
+def _createFeaturePreprocessingFileFromImport(obj):
+    #read the unique species ids from the puvspr file
+    df = _getProjectInputData(obj, "PUVSPRNAME")
+    #get the unique species ids
+    ids = sorted(df.species.unique().tolist())
+    #iterate through the species ids and get the data for them
+    for id in ids:
+        #get the summary information and write it to the feature preprocessing file
+        record = _getPuvsprStats(df, id)
+        print record
+        _writeToDatFile(obj.folder_input + FEATURE_PREPROCESSING_FILENAME, record)
+    
 ####################################################################################################################################################################################################################################################################
 ## generic classes
 ####################################################################################################################################################################################################################################################################
@@ -800,16 +823,14 @@ class createProject(MarxanRESTHandler):
         #set the response
         self.send_response({'info': "Project '" + self.get_argument('project') + "' created", 'name': self.get_argument('project')})
 
-#creates a project from the import wizard
+#creates a simple project for the import wizard
 #POST ONLY
 class createImportProject(MarxanRESTHandler):
     def post(self):
         #validate the input arguments
-        _validateArguments(self.request.arguments, ['user','project','description'])  
+        _validateArguments(self.request.arguments, ['user','project'])  
         #create the empty project folder
         _createProject(self, self.get_argument('project'))
-        #update the projects parameters
-        _updateParameters(self.folder_project + PROJECT_DATA_FILENAME, {'DESCRIPTION': self.get_argument('description'), 'CREATEDATE': datetime.datetime.now().strftime("%a, %d %b %Y %H:%M:%S")})
         #set the response
         self.send_response({'info': "Project '" + self.get_argument('project') + "' created", 'name': self.get_argument('project')})
 
@@ -831,6 +852,10 @@ class upgradeProject(MarxanRESTHandler):
             _writeFile(self.folder_project + PROJECT_DATA_FILENAME, old)
         else:
             raise MarxanServicesError("Unable to update the old version of Marxan to the new one")
+        #populate the feature_preprocessing.dat file using data in the puvspr.dat file
+        _createFeaturePreprocessingFileFromImport(self)
+        #delete the contents of the output folder
+        _deleteAllFiles(self.folder_output)
         #set the response
         self.send_response({'info': "Project '" + self.get_argument("project") + "' updated", 'project': self.get_argument("project")})
 
@@ -933,6 +958,18 @@ class createPlanningUnitGrid(MarxanRESTHandler):
         #set the response
         self.send_response({'info':'Planning unit grid created', 'planning_unit_grid': data[0]})
 
+#https://db-server-blishten.c9users.io:8081/marxan-server/deletePlanningUnitGrid?planning_grid_name=pu_sample&callback=__jp10        
+class deletePlanningUnitGrid(MarxanRESTHandler):
+    def get(self):
+        #validate the input arguments
+        _validateArguments(self.request.arguments, ['planning_grid_name'])    
+        #delete the new planning unit record from the metadata_planning_units table
+        PostGIS().execute("DELETE FROM marxan.metadata_planning_units WHERE feature_class_name = %s;", [self.get_argument('planning_grid_name')])
+        #delete the feature class
+        PostGIS().execute(sql.SQL("DROP TABLE marxan.{};").format(sql.Identifier(self.get_argument('planning_grid_name'))))
+        #set the response
+        self.send_response({'info':'Planning unit grid deleted'})
+
 #validates a user with the passed credentials
 #https://db-server-blishten.c9users.io:8081/marxan-server/validateUser?user=andrew&password=thargal88&callback=__jp2
 class validateUser(MarxanRESTHandler):
@@ -1005,6 +1042,20 @@ class getFeature(MarxanRESTHandler):
         _getFeature(self, self.get_argument("oid"))
         #set the response
         self.send_response({"data": self.data.to_dict(orient="records")})
+
+#gets the features planning unit ids from the puvspr.dat file
+#https://db-server-blishten.c9users.io:8081/marxan-server/getFeaturePlanningUnits?user=andrew&project=Tonga%20marine%2030Km2&oid=63407942&callback=__jp2
+class getFeaturePlanningUnits(MarxanRESTHandler):
+    def get(self):
+        #validate the input arguments
+        _validateArguments(self.request.arguments, ['user','project','oid'])    
+        #get the data from the puvspr.dat file as a dataframe
+        df = _loadCSV(self.folder_input + PUVSPR_FILENAME)
+        #get the planning unit ids as a list
+        puids = df.loc[df['species'] == int(self.get_argument("oid"))]['pu'].tolist()
+        print puids
+        #set the response
+        self.send_response({"data": puids})
 
 #gets species information for a specific project from the spec.dat file
 #https://db-server-blishten.c9users.io:8081/marxan-server/getSpeciesData?user=andrew&project=Tonga%20marine%2030Km2&callback=__jp3
@@ -1178,6 +1229,17 @@ class updatePUFile(MarxanRESTHandler):
         _updatePuFile(self, status1_ids, status2_ids, status3_ids)
         #set the response
         self.send_response({'info': "pu.dat file updated"})
+
+#used to populate the feature_preprocessing.dat file from an imported puvspr.dat file
+#https://db-server-blishten.c9users.io:8081/marxan-server/createFeaturePreprocessingFileFromImport?user=andrew&project=test&callback=__jp2
+class createFeaturePreprocessingFileFromImport(MarxanRESTHandler):
+    def get(self):
+        #validate the input arguments
+        _validateArguments(self.request.arguments, ['user','project']) 
+        #run the internal routine
+        _createFeaturePreprocessingFileFromImport(self)
+        #set the response
+        self.send_response({'info': "feature_preprocessing.dat file populated"})
 
 #updates parameters in the users user.dat file       
 #POST ONLY
@@ -1406,25 +1468,20 @@ class preprocessFeature(QueryWebSocketHandler):
         df = df[~df.species.isin([speciesId])]
         #append the intersection data to the existing data
         df = df.append(intersectionData)
-        #sort the values by the species column
-        df = df.sort_values(by=['species'])
+        #sort the values by the species column then pu column
+        df = df.sort_values(by=['species','pu'])
         try: 
             #write the data to the PUVSPR.dat file
             _writeCSV(self, "PUVSPRNAME", df)
             #get the summary information and write it to the feature preprocessing file
-            #get the count of intersecting planning units
-            pu_count = df[df.species.isin([speciesId])].agg({'pu' : ['count']})['pu'].iloc[0]
-            #get the total area of the feature across all planning units
-            pu_area = df[df.species.isin([speciesId])].agg({'amount': ['sum']})['amount'].iloc[0]
-            #write the pu_area and pu_count to the preprocessing.dat file 
-            record = pandas.DataFrame({'id':speciesId, 'pu_area': [pu_area], 'pu_count': [pu_count]}).astype({'id': 'int', 'pu_area':'float', 'pu_count':'int'})
+            record = _getPuvsprStats(df, speciesId)
             _writeToDatFile(self.folder_input + FEATURE_PREPROCESSING_FILENAME, record)
         except (MarxanServicesError) as e:
             self.send_response({'error': e.message, 'status':'Finished'})
         #update the input.dat file
-        _updateParameters(self.folder_project + PROJECT_DATA_FILENAME, {'PUVSPRNAME': 'puvspr.dat'})
+        _updateParameters(self.folder_project + PROJECT_DATA_FILENAME, {'PUVSPRNAME': PUVSPR_FILENAME})
         #set the response
-        self.send_response({'info': "Feature '" + self.get_argument('alias') + "' preprocessed", "feature_class_name": self.get_argument('feature_class_name'), "pu_area" : str(pu_area),"pu_count" : str(pu_count), "id":str(speciesId), 'status':'Finished'})
+        self.send_response({'info': "Feature '" + self.get_argument('alias') + "' preprocessed", "feature_class_name": self.get_argument('feature_class_name'), "pu_area" : str(record.iloc[0]['pu_area']),"pu_count" : str(record.iloc[0]['pu_count']), "id":str(speciesId), 'status':'Finished'})
         #close the websocket
         self.close()
 
@@ -1559,16 +1616,19 @@ def make_app():
         ("/marxan-server/getCountries", getCountries),
         ("/marxan-server/getPlanningUnitGrids", getPlanningUnitGrids),
         ("/marxan-server/createPlanningUnitGrid", createPlanningUnitGrid),
+        ("/marxan-server/deletePlanningUnitGrid", deletePlanningUnitGrid),
         ("/marxan-server/uploadTilesetToMapBox", uploadTilesetToMapBox),
         ("/marxan-server/uploadShapefile", uploadShapefile),
         ("/marxan-server/uploadFile", uploadFile),
         ("/marxan-server/importFeature", importFeature),
         ("/marxan-server/importPlanningUnitGrid", importPlanningUnitGrid),
+        ("/marxan-server/createFeaturePreprocessingFileFromImport", createFeaturePreprocessingFileFromImport),
         ("/marxan-server/validateUser", validateUser),
         ("/marxan-server/getUser", getUser),
         ("/marxan-server/getUsers", getUsers),
         ("/marxan-server/getProject", getProject),
         ("/marxan-server/getFeature", getFeature),
+        ("/marxan-server/getFeaturePlanningUnits", getFeaturePlanningUnits),
         ("/marxan-server/getSpeciesData", getSpeciesData),
         ("/marxan-server/getAllSpeciesData", getAllSpeciesData),
         ("/marxan-server/getSpeciesPreProcessingData", getSpeciesPreProcessingData),
