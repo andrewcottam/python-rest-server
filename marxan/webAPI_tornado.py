@@ -1,6 +1,7 @@
 from tornado.iostream import StreamClosedError
 from tornado.process import Subprocess
 from tornado.log import LogFormatter
+from tornado.web import HTTPError
 from tornado.ioloop import IOLoop
 from tornado import concurrent
 from tornado import gen
@@ -33,6 +34,14 @@ import signal
 ####################################################################################################################################################################################################################################################################
 ## constant declarations
 ####################################################################################################################################################################################################################################################################
+##SECURITY SETTINGS
+COOKIE_RANDOM_VALUE = "__TODO:_GENERATE_YOUR_OWN_RANDOM_VALUE_HERE__"           # This must be set to a random value as it is used to encrypt and sign cookies - if it is not changed then malicious hackers can use this default value to produce their own signed cookies compromising security
+PERMITTED_DOMAINS = ["https://marxan-client-blishten.c9users.io:8081/"]         # Add domains that you want to allow to access your services and data - this only applies to cross-domain requests and is not relevant if the client and server software are on the same machine
+PERMITTED_METHODS = ["createUser","validateUser"]                               # REST services that have no authentication/authorisation 
+ROLE_UNAUTHORISED_METHODS = {                                                   # Add REST services that you want to lock down to specific roles - a class added to an array will make that method unavailable for that role
+    "User": ['testRoleAuthorisation','deleteProject'],
+    "Admin": []
+}
 CONNECTION_STRING = "dbname='biopama' host='localhost' user='jrc' password='thargal88'"
 MARXAN_FOLDER = "/home/ubuntu/workspace/marxan/Marxan243/MarxanData_unix/"
 MARXAN_EXECUTABLE = MARXAN_FOLDER + "MarOpt_v243_Linux64"
@@ -41,6 +50,7 @@ START_PROJECT_FOLDER = MARXAN_WEB_RESOURCES_FOLDER + "Start project/"
 EMPTY_PROJECT_TEMPLATE_FOLDER = MARXAN_WEB_RESOURCES_FOLDER + "empty_project/"
 CLUMP_FOLDER = MARXAN_FOLDER + "_clumping/"
 OGR2OGR_EXECUTABLE = "/home/ubuntu/miniconda2/bin/ogr2ogr"
+MAPBOX_USER = "blishten"
 MAPBOX_ACCESS_TOKEN = "sk.eyJ1IjoiYmxpc2h0ZW4iLCJhIjoiY2piNm1tOGwxMG9lajMzcXBlZDR4aWVjdiJ9.Z1Jq4UAgGpXukvnUReLO1g"
 USER_DATA_FILENAME = "user.dat"
 PROJECT_DATA_FILENAME = "input.dat"
@@ -61,6 +71,14 @@ MISSING_VALUES_FILE_PREFIX = "output_mv"
 ## generic functions that dont belong to a class so can be called by subclasses of tornado.web.RequestHandler and tornado.websocket.WebSocketHandler equally - underscores are used so they dont mask the equivalent url endpoints
 ####################################################################################################################################################################################################################################################################
 
+#gets that method part of the REST service path, e.g. /marxan-server/validateUser will return validateUser
+def _getRESTMethod(path):
+    pos = path.rfind("/")
+    if pos > -1:
+        return path[pos+1:]
+    else:
+        return ""
+    
 #creates a new user
 def _createUser(obj, user, fullname, email, password, mapboxaccesstoken):
     #get the list of users
@@ -181,6 +199,7 @@ def _getProjectData(obj):
                 else:
                     #get the data from the metadata_planning_units table
                     metadataDict.update({'pu_alias': df2.iloc[0]['alias'],'pu_description': df2.iloc[0]['description'],'pu_domain': df2.iloc[0]['domain'],'pu_area': df2.iloc[0]['area'],'pu_creation_date': df2.iloc[0]['creation_date']})
+
         elif k in ['CLASSIFICATION', 'NUMCLASSES','COLORCODE', 'TOPCLASSES','OPACITY']: # renderer section of the input.dat file
             key, value = _getKeyValue(s, k)
             rendererDict.update({key: value})
@@ -228,7 +247,7 @@ def _getSpeciesData(obj):
     #add the index as a column
     output_df['oid'] = output_df.index
     #see if the version of marxan is the old version
-    if obj.projectData["metadata"]["OLDVERSION"] == "True":
+    if obj.projectData["metadata"]["OLDVERSION"]:
         #return the data from the spec.dat file with additional fields manually added
         output_df['tmp'] = 'Unique identifer: '
         output_df['alias'] = output_df['tmp'].str.cat((output_df['oid']).apply(str)) # returns: 'Unique identifer: 4702435'
@@ -236,11 +255,11 @@ def _getSpeciesData(obj):
         output_df['description'] = "No description"
         output_df['creation_date'] = "Unknown"
         output_df['area'] = -1
-        output_df['tilesetid'] = None
+        output_df['tilesetid'] = ''
         output_df = output_df[["alias", "feature_class_name", "description", "creation_date", "area", "tilesetid", "prop", "spf", "oid"]]
     else:
         #get the postgis feature data
-        df2 = PostGIS().getDataFrame("select * from marxan.get_interest_features()")
+        df2 = PostGIS().getDataFrame("select * from marxan.get_features()")
         #join the species data to the PostGIS data
         output_df = output_df.join(df2.set_index("oid"))
     #rename the columns that are sent back to the client as the names of various properties are different in Marxan compared to the web client
@@ -251,11 +270,11 @@ def _getSpeciesData(obj):
         
 #gets data for a single feature
 def _getFeature(obj, oid):
-    obj.data = PostGIS().getDataFrame("SELECT oid::integer as id, creation_date::text, feature_class_name, alias, _area area, description FROM marxan.metadata_interest_features WHERE oid = %s", [oid])
+    obj.data = PostGIS().getDataFrame("SELECT * FROM marxan.get_feature(%s)", [oid])
 
 #get all species information from the PostGIS database
 def _getAllSpeciesData(obj):
-    obj.allSpeciesData = PostGIS().getDataFrame("SELECT oid::integer as id, creation_date::text, feature_class_name, alias, _area area, description, tilesetid FROM marxan.metadata_interest_features order by alias;")
+    obj.allSpeciesData = PostGIS().getDataFrame("select oid::integer id,feature_class_name , alias , description , _area area, extent, creation_date::text, tilesetid from marxan.metadata_interest_features order by alias;")
 
 #get the information about which species have already been preprocessed
 def _getSpeciesPreProcessingData(obj):
@@ -479,6 +498,11 @@ def _getKeys(s):
 def _getKeyValue(text, parameterName):
     p1 = text.index(parameterName)
     value = text[p1 + len(parameterName) + 1:text.index("\r",p1)]
+    #convert any boolean text strings to boolean values - these will then get returned as javascript bool types
+    if value == "True":
+        value = True
+    if value == "False":
+        value = False
     return parameterName, value
 
 #converts a data frame with duplicate values into a normalised array
@@ -601,6 +625,9 @@ def _importFeature(filename, name, description):
     #import the shapefile into PostGIS
     postgis = PostGIS()
     postgis.importShapefile(rootfilename + ".shp", "undissolved", "EPSG:3410")
+    #TODO: implement the upload to Mapbox
+    uploadId = _uploadTileset(MARXAN_FOLDER + filename, rootfilename)
+    tilesetId = MAPBOX_USER + "." + rootfilename
     #delete the shapefile and the zip file
     #TODO: _deleteZippedShapefile is cleanup code and wherever it occurs it should always be run even if an exception occurs
     _deleteZippedShapefile(MARXAN_FOLDER, filename, rootfilename)
@@ -611,7 +638,7 @@ def _importFeature(filename, name, description):
     #drop the undissolved feature class
     postgis.execute("DROP TABLE IF EXISTS marxan.undissolved;") 
     #create a record for this new feature in the metadata_interest_features table
-    id = postgis.execute(sql.SQL("INSERT INTO marxan.metadata_interest_features SELECT %s, %s, %s, now(), sub._area FROM (SELECT ST_Area(geometry) _area FROM marxan.{}) AS sub RETURNING oid;").format(sql.Identifier(rootfilename)), [rootfilename, name, description], "One")[0]
+    id = postgis.execute(sql.SQL("INSERT INTO marxan.metadata_interest_features SELECT %s, %s, %s, now(), sub._area, %s, sub.extent FROM (SELECT ST_Area(geometry) _area, box2d(ST_Transform(ST_SetSRID(geometry,3410),4326)) extent FROM marxan.{} GROUP BY geometry) AS sub RETURNING oid;").format(sql.Identifier(rootfilename)), [rootfilename, name, description, tilesetId], "One")[0]
     return id
 
 #imports the planning unit grid from a zipped shapefile (given by filename) and starts the upload to Mapbox
@@ -641,8 +668,60 @@ def _createFeaturePreprocessingFileFromImport(obj):
     for id in ids:
         #get the summary information and write it to the feature preprocessing file
         record = _getPuvsprStats(df, id)
-        print record
         _writeToDatFile(obj.folder_input + FEATURE_PREPROCESSING_FILENAME, record)
+        
+#detects whether the request is for a websocket from a tornado.httputil.HTTPServerRequest
+def _requestIsWebSocket(request):
+    if "upgrade" in request.headers:
+        if request.headers["upgrade"] == "websocket":
+            return True
+        else:
+            return False
+    else:
+        return True
+
+#to prevent CORS errors in the client
+def _checkCORS(obj):
+    #get the referer
+    if "Referer" in obj.request.headers.keys():
+        referer = obj.request.headers.get("Referer")
+        #for GET requests the 'Referer' header will be used - this will include a trailing forward slash
+        #for POST requests the 'Origin' header will be used - this has no url parameters and no trailing forward slash
+        origin = referer if obj.request.method == "GET" else referer[:-1]
+        if referer in PERMITTED_DOMAINS:
+            obj.set_header("Access-Control-Allow-Origin", origin)
+            obj.set_header("Access-Control-Allow-Credentials", "true")
+        else:
+            raise HTTPError(403, "The origin '" + referer + "' does not have permission to access the service (CORS error)", reason = "The origin '" + referer + "' does not have permission to access the service (CORS error)")
+    else:
+        raise HTTPError(403, "The request header does not specify a referer and this is required for CORS access.", reason = "The request header does not specify a referer and this is required for CORS access.")
+
+#test all requests to make sure the user is authenticated - if not returns a 403
+def _authenticate(obj):
+    #check for an authenticated user
+    if not obj.current_user: 
+        #if not return a 401
+        raise HTTPError(401, "Request could not be authenticated. No secure cookie found.", reason = "Request could not be authenticated. No secure cookie found.")
+
+#tests the role has access to the method
+def _authoriseRole(obj, method):
+    #get the requested role
+    role = obj.get_secure_cookie("role")
+    #get the list of methods that this role cannot access
+    unauthorised = ROLE_UNAUTHORISED_METHODS[role]
+    if method in unauthorised:
+        raise HTTPError(403, "The '" + role + "' role does not have permission to access the '" + method + "' service", reason = "The '" + role + "' role does not have permission to access the '" + method + "' service")
+
+#tests if the user can access the service - Admin users can access projects belonging to other users
+def _authoriseUser(obj):
+    #if the call includes a user argument
+    if "user" in obj.request.arguments.keys():
+        #see if the user argument matches the obj.current_user
+        if (obj.get_argument("user") != obj.current_user):
+            #get the requested role
+            role = obj.get_secure_cookie("role")
+            if role != "Admin":
+                raise HTTPError(403, "The user '" + obj.current_user + "' has no permission to access a project of another user", reason = "The user '" + obj.current_user + "' has no permission to access a project of another user")    
     
 ####################################################################################################################################################################################################################################################################
 ## generic classes
@@ -739,25 +818,36 @@ class PostGIS():
                 
     def __del__(self):
         self._cleanup()
-    
+
 ####################################################################################################################################################################################################################################################################
 ## baseclass for handling REST requests
 ####################################################################################################################################################################################################################################################################
 
 class MarxanRESTHandler(tornado.web.RequestHandler):
-    #to prevent CORS errors in the client
-    def set_default_headers(self):
-        self.set_header("Access-Control-Allow-Origin", "*")
 
-    #called before the request is processed 
+    #get the current user
+    def get_current_user(self):
+        return self.get_secure_cookie("user")
+
+    #called before the request is processed - does the neccessary authentication/authorisation
     def prepare(self):
-        try:
+        #check the referer can call the REST end point from their domain
+        _checkCORS(self)
+        #get the requested method
+        method = _getRESTMethod(self.request.path)
+        #allow access to some methods without authentication/authorisation, e.g. to create new users or validate a user
+        if method not in PERMITTED_METHODS:
+            #check the request is authenticated
+            _authenticate(self)
+            #check the users role has access to the requested service
+            _authoriseRole(self, method)
+            #check the user has access to the specific resource, i.e. the 'User' role cannot access projects from other users
+            _authoriseUser(self)
             #instantiate the response dictionary
             self.response = {}
-            #set the folder paths for the user and optionally project
-            _setFolderPaths(self, self.request.arguments)
-        except (MarxanServicesError) as e:
-            self.send_response({"error": repr(e)})
+        #set the folder paths for the user and optionally project
+        _setFolderPaths(self, self.request.arguments)
+        # self.send_response({"error": repr(e)})
     
     #used by all descendent classes to write the return payload and send it
     def send_response(self, response):
@@ -778,16 +868,16 @@ class MarxanRESTHandler(tornado.web.RequestHandler):
                 self.write(content)
     
     #uncaught exception handling that captures any exceptions in the descendent classes and writes them back to the client
-    def write_error(self, status_code, **kwargs):
-        if "exc_info" in kwargs:
-            trace = ""
-            for line in traceback.format_exception(*kwargs["exc_info"]):
-                trace = trace + line
-            lastLine = traceback.format_exception(*kwargs["exc_info"])[len(traceback.format_exception(*kwargs["exc_info"]))-1]
-            # logging.error(lastLine)
-            self.set_status(200)
-            self.send_response({"error":lastLine, "trace" : trace})
-            self.finish()
+    # def write_error(self, status_code, **kwargs):
+        # if "exc_info" in kwargs:
+        #     trace = ""
+        #     for line in traceback.format_exception(*kwargs["exc_info"]):
+        #         trace = trace + line
+        #     lastLine = traceback.format_exception(*kwargs["exc_info"])[len(traceback.format_exception(*kwargs["exc_info"]))-1]
+        #     self.set_status(status_code)
+        #     # self.set_status(200)
+        #     # self.send_response({"error":lastLine, "trace" : trace})
+        #     self.finish()
     
 ####################################################################################################################################################################################################################################################################
 ## RequestHandler subclasses
@@ -983,6 +1073,10 @@ class validateUser(MarxanRESTHandler):
             raise MarxanServicesError("Invalid login")
         #compare the passed password to the one in the user.dat file
         if self.get_argument("password") == self.userData["PASSWORD"]:
+            #set a response cookie for the authenticated user
+            self.set_secure_cookie("user", self.get_argument("user"), httponly = True) 
+            #set a response cookie for the authenticated users role
+            self.set_secure_cookie("role", self.userData["ROLE"], httponly = True)
             #set the response
             self.send_response({'info': "User " + self.user + " validated"})
         else:
@@ -990,15 +1084,18 @@ class validateUser(MarxanRESTHandler):
             raise MarxanServicesError("Invalid login")    
 
 #gets a users information from the user folder
-#https://db-server-blishten.c9users.io:8081/marxan-server/getUser?user=andrew&callback=__jp2
+#curl 'https://db-server-blishten.c9users.io:8081/marxan-server/getUser?user=andrew&callback=__jp1' -H 'If-None-Match: "0798406453417c47c0b5ab5bd11d56a60fb4df7d"' -H 'Accept-Encoding: gzip, deflate, br' -H 'Accept-Language: en-US,en;q=0.9,fr;q=0.8' -H 'User-Agent: Mozilla/5.0 (Windows NT 10.0; WOW64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/70.0.3538.110 Safari/537.36' -H 'Accept: */*' -H 'Referer: https://marxan-client-blishten.c9users.io:8081/' -H 'Cookie: c9.live.user.jwt=eyJ0eXAiOiJKV1QiLCJhbGciOiJIUzI1NiJ9.eyJpZCI6IjE2MzQxNDgiLCJuYW1lIjoiYmxpc2h0ZW4iLCJjb2RlIjoiOWNBUzdEQldsdWYwU2oyU01ZaEYiLCJpYXQiOjE1NDgxNDg0MTQsImV4cCI6MTU0ODIzNDgxNH0.yJ9mPz4bM7L3htL8vXVFMCcQpTO0pkRvhNHJP9WnJo8; c9.live.user.sso=eyJ0eXAiOiJKV1QiLCJhbGciOiJIUzI1NiJ9.eyJpZCI6IjE2MzQxNDgiLCJuYW1lIjoiYmxpc2h0ZW4iLCJpYXQiOjE1NDgxNDg0MTQsImV4cCI6MTU0ODIzNDgxNH0.ifW5qlkpC19iyMNBgZLtGZzxuMRyHKWldGg3He-__gI; role="2|1:0|10:1548151226|4:role|8:QWRtaW4=|d703b0f18c81cf22c85f41c536f99589ce11492925d85833e78d3d66f4d7fd62"; user="2|1:0|10:1548151226|4:user|8:YW5kcmV3|e5ed3b87979273b1b8d1b8983310280507941fe05fb665847e7dd5dacf36348d"' -H 'Connection: keep-alive' --compressed
 class getUser(MarxanRESTHandler):
     def get(self):
         #validate the input arguments
         _validateArguments(self.request.arguments, ['user'])    
         #get the user data from the user.dat file
         _getUserData(self)
+        #get the permissions for the users role
+        role = self.userData["ROLE"]
+        unauthorised = ROLE_UNAUTHORISED_METHODS[role]
         #set the response
-        self.send_response({'info': "User data received", "userData" : {k: v for k, v in self.userData.iteritems() if k != 'PASSWORD'}})
+        self.send_response({'info': "User data received", "userData" : {k: v for k, v in self.userData.iteritems() if k != 'PASSWORD'}, "unauthorisedMethods": unauthorised})
 
 #gets a list of all users
 #https://db-server-blishten.c9users.io:8081/marxan-server/getUsers
@@ -1014,7 +1111,15 @@ class getUsers(MarxanRESTHandler):
 class getProject(MarxanRESTHandler):
     def get(self):
         #validate the input arguments
-        _validateArguments(self.request.arguments, ['user','project'])    
+        _validateArguments(self.request.arguments, ['user','project']) 
+        #if the project name is an empty string, then get the first project for the user
+        if (self.get_argument("project") == ""):
+            _getProjects(self)
+            project = self.projects[0]['name']
+            #set the project argument
+            self.request.arguments['project'] = [project]
+            #and set the paths to this project
+            _setFolderPaths(self, self.request.arguments)
         #get the project data from the input.dat file
         _getProjectData(self)
         #get the species data from the spec.dat file and the PostGIS database
@@ -1053,7 +1158,6 @@ class getFeaturePlanningUnits(MarxanRESTHandler):
         df = _loadCSV(self.folder_input + PUVSPR_FILENAME)
         #get the planning unit ids as a list
         puids = df.loc[df['species'] == int(self.get_argument("oid"))]['pu'].tolist()
-        print puids
         #set the response
         self.send_response({"data": puids})
 
@@ -1333,27 +1437,95 @@ class stopMarxan(MarxanRESTHandler):
             raise MarxanServicesError("The PID does not exist")
         else:
             self.send_response({'info': "PID '" + self.get_argument('pid') + "' terminated"})
+            
+#for testing role access to servivces            
+#https://db-server-blishten.c9users.io:8081/marxan-server/testRoleAuthorisation&callback=__jp5
+class testRoleAuthorisation(MarxanRESTHandler):
+    def get(self):
+        self.send_response({'info': "Service successful"})
 
 ####################################################################################################################################################################################################################################################################
 ## baseclass for handling WebSockets
 ####################################################################################################################################################################################################################################################################
 
 class MarxanWebSocketHandler(tornado.websocket.WebSocketHandler):
-    #to prevent CORS errors in the client
-    def check_origin(self, origin):
-        return True
+    #get the current user
+    def get_current_user(self):
+        return self.get_secure_cookie("user")
 
-    #called when the websocket is opened - gets the folder paths for the user and optionally the project
+    #check CORS access for the websocket
+    def check_origin(self, origin):
+        #check the origin is in the permitted origins - the Origin header will not end in a forward slash
+        if origin + "/" in PERMITTED_DOMAINS:
+            return True
+        else:
+            raise HTTPError(403, "The origin '" + origin + "' does not have permission to access the service (CORS error)", reason = "The origin '" + origin + "' does not have permission to access the service (CORS error)")
+
+    #called when the websocket is opened - does authentication/authorisation then gets the folder paths for the user and optionally the project
     def open(self):
-        #set the folder paths for the user and optionally project
-        _setFolderPaths(self, self.request.arguments)
+        #check the request is authenticated
+        _authenticate(self)
+        #get the requested method
+        method = _getRESTMethod(self.request.path)
+        #check the users role has access to the requested service
+        _authoriseRole(self, method)
+        #check the user has access to the specific resource, i.e. the 'User' role cannot access projects from other users
+        _authoriseUser(self)
         #set the start time of the websocket
         self.startTime = datetime.datetime.now()
+        #set the folder paths for the user and optionally project
+        _setFolderPaths(self, self.request.arguments)
 
     #sends the message with a timestamp
     def send_response(self, message):
-        message.update({'elapsedtime': str((datetime.datetime.now() - self.startTime).seconds) + " seconds"})
+        if self.startTime: 
+            elapsedtime = str((datetime.datetime.now() - self.startTime).seconds) + " seconds"
+            message.update({'elapsedtime': elapsedtime})
         self.write_message(message)
+
+####################################################################################################################################################################################################################################################################
+## MarxanWebSocketHandler subclasses
+####################################################################################################################################################################################################################################################################
+
+#wss://db-server-blishten.c9users.io:8081/marxan-server/runMarxan?user=andrew&project=Tonga%20marine%2030km2
+#starts a Marxan run on the server and streams back the output as websockets
+class runMarxan(MarxanWebSocketHandler):
+    #authenticate and get the user folder and project folders
+    def open(self):
+        try:
+            super(runMarxan, self).open()
+        except (HTTPError) as e:
+            self.send_response({'error': e.reason, 'status': 'Finished'})
+        else:
+            self.send_response({'info': "Running Marxan", 'status':'Started'})
+            #set the current folder to the project folder so files can be found in the input.dat file
+            if (os.path.exists(self.folder_project)):
+                os.chdir(self.folder_project)
+                #delete all of the current output files
+                _deleteAllFiles(self.folder_output)
+                #run marxan - the Subprocess.STREAM option does not work on Windows - see here: https://www.tornadoweb.org/en/stable/process.html?highlight=Subprocess#tornado.process.Subprocess
+                #the "exec " in front allows you to get the pid of the child process, i.e. marxan, and therefore to be able to kill the process using os.kill(pid, signal.SIGTERM) instead of the tornado process - see here: https://stackoverflow.com/questions/4789837/how-to-terminate-a-python-subprocess-launched-with-shell-true/4791612#4791612
+                self.app = Subprocess(["exec " + MARXAN_EXECUTABLE], stdout=Subprocess.STREAM, stdin=subprocess.PIPE, shell=True)
+                #return the pid so that the process can be stopped
+                self.send_response({'pid': self.app.pid, 'status':'pid'})
+                IOLoop.current().spawn_callback(self.stream_output)
+                self.app.stdin.write('\n') # to end the marxan process by sending ENTER to the stdin
+            else:
+                self.send_response({'error': "Project '" + self.get_argument("project") + "' does not exist", 'status': 'Finished', 'project': self.get_argument("project"), 'user': self.get_argument("user")})
+                #close the websocket
+                self.close()
+
+    @gen.coroutine
+    def stream_output(self):
+        try:
+            while True:
+                # line = yield self.app.stdout.read_bytes(4096)
+                line = yield self.app.stdout.read_bytes(4096, partial=True)
+                self.send_response({'info':line, 'status':'Running'})
+        except StreamClosedError: #fired when the stream closes
+            self.send_response({'info': 'Run completed', 'status': 'Finished', 'project': self.get_argument("project"), 'user': self.get_argument("user")})
+            #close the websocket
+            self.close()
 
 ####################################################################################################################################################################################################################################################################
 ## baseclass for handling long-running PostGIS queries using WebSockets
@@ -1361,6 +1533,10 @@ class MarxanWebSocketHandler(tornado.websocket.WebSocketHandler):
 
 class QueryWebSocketHandler(MarxanWebSocketHandler):
     
+    #authenticate and get the user folder and project folders
+    def open(self):
+        super(QueryWebSocketHandler, self).open()
+
     #required for asyncronous queries
     def wait(self):
         while 1:
@@ -1426,16 +1602,15 @@ class preprocessFeature(QueryWebSocketHandler):
 
     #run the preprocessing
     def open(self):
-        #get the user folder and project folders
-        super(preprocessFeature, self).open()
         try:
-            _validateArguments(self.request.arguments, ['user','project','id','feature_class_name','alias','planning_grid_name'])    
-        except (MarxanServicesError) as e:
-            self.send_response({'error': e.message, 'status':'Finished'})
+            super(preprocessFeature, self).open()
+        except (HTTPError) as e:
+            self.send_response({'error': e.reason, 'status': 'Finished'})
         else:
+            _validateArguments(self.request.arguments, ['user','project','id','feature_class_name','alias','planning_grid_name'])    
             #get the project data
             _getProjectData(self)
-            if (self.projectData["metadata"]["OLDVERSION"] == 'False'):
+            if (not self.projectData["metadata"]["OLDVERSION"]):
                 #new version of marxan - do the intersection
                 future = self.executeQueryAsynchronously("SELECT * FROM marxan.get_pu_areas_for_interest_feature(%s,%s);", [self.get_argument('planning_grid_name'),self.get_argument('feature_class_name')], "Preprocessing '" + self.get_argument('alias') + "'", "  Preprocessing..", "Finishing preprocessing")
                 future.add_done_callback(self.intersectionComplete)
@@ -1491,32 +1666,27 @@ class preprocessProtectedAreas(QueryWebSocketHandler):
 
     #run the preprocessing
     def open(self):
-        #get the user folder and project folders
-        super(preprocessProtectedAreas, self).open()
         try:
-            _validateArguments(self.request.arguments, ['user','project','planning_grid_name'])    
-        except (MarxanServicesError) as e:
-            self.send_response({'error': e.message, 'status':'Finished'})
+            super(preprocessProtectedAreas, self).open()
+        except (HTTPError) as e:
+            self.send_response({'error': e.reason, 'status': 'Finished'})
         else:
+            _validateArguments(self.request.arguments, ['user','project','planning_grid_name'])    
             #get the project data
             _getProjectData(self)
-            if (self.projectData["metadata"]["OLDVERSION"] == 'False'):
-                #new version of marxan - do the intersection with the protected areas
-                future = self.executeQueryAsynchronously(sql.SQL("SELECT DISTINCT iucn_cat, grid.puid FROM (SELECT iucn_cat, geom FROM marxan.wdpa) AS wdpa, marxan.{} grid WHERE ST_Intersects(wdpa.geom, ST_Transform(grid.geometry, 4326)) ORDER BY 1,2;").format(sql.Identifier(self.get_argument('planning_grid_name'))), None, "Preprocessing protected areas", "  Preprocessing protected areas..", "Finishing preprocessing")
-                future.add_done_callback(self.preprocessProtectedAreasComplete)
-            else:
-                #pass None as the Future object to the callback for the old version of marxan
-                self.preprocessProtectedAreasComplete(None) 
+            #do the intersection with the protected areas
+            future = self.executeQueryAsynchronously(sql.SQL("SELECT DISTINCT iucn_cat, grid.puid FROM (SELECT iucn_cat, geom FROM marxan.wdpa) AS wdpa, marxan.{} grid WHERE ST_Intersects(wdpa.geom, ST_Transform(grid.geometry, 4326)) ORDER BY 1,2;").format(sql.Identifier(self.get_argument('planning_grid_name'))), None, "Preprocessing protected areas", "  Preprocessing protected areas..", "Finishing preprocessing")
+            future.add_done_callback(self.preprocessProtectedAreasComplete)
     
     #callback which is called when the intersection has been done
     def preprocessProtectedAreasComplete(self, future):
-        if (future): #i.e. new version of marxan
+        if hasattr(self, "queryResults"):
             #get the intersection data as a dataframe from the queryresults
             df = pandas.DataFrame.from_records(self.queryResults["records"], columns = self.queryResults["columns"])
             #write the intersections to file
             df.to_csv(self.folder_input + PROTECTED_AREA_INTERSECTIONS_FILENAME, index =False)
-            #get the data
-            _getProtectedAreaIntersectionsData(self)
+        #get the data
+        _getProtectedAreaIntersectionsData(self)
         #set the response
         self.send_response({'info': self.protectedAreaIntersectionsData, 'status':'Finished'})
     
@@ -1526,16 +1696,15 @@ class preprocessPlanningUnits(QueryWebSocketHandler):
 
     #run the preprocessing
     def open(self):
-        #get the user folder and project folders
-        super(preprocessPlanningUnits, self).open()
         try:
-            _validateArguments(self.request.arguments, ['user','project'])    
-        except (MarxanServicesError) as e:
-            self.send_response({'error': e.message, 'status':'Finished'})
+            super(preprocessPlanningUnits, self).open()
+        except (HTTPError) as e:
+            self.send_response({'error': e.reason, 'status': 'Finished'})
         else:
+            _validateArguments(self.request.arguments, ['user','project'])    
             #get the project data
             _getProjectData(self)
-            if (self.projectData["metadata"]["OLDVERSION"] == 'False'):
+            if (not self.projectData["metadata"]["OLDVERSION"]):
                 #new version of marxan - get the boundary lengths
                 PostGIS().execute("DROP TABLE IF EXISTS marxan.tmp;") 
                 future = self.executeQueryAsynchronously(sql.SQL("CREATE TABLE marxan.tmp AS SELECT DISTINCT a.puid id1, b.puid id2, ST_Length(ST_CollectionExtract(ST_Intersection(a.geometry, b.geometry), 2))/1000 boundary  FROM marxan.{0} a, marxan.{0} b  WHERE a.puid < b.puid AND ST_Touches(a.geometry, b.geometry);").format(sql.Identifier(self.projectData["metadata"]["PLANNING_UNIT_NAME"])), None, "Getting boundary lengths", "  Processing ..", "Finishing preprocessing")
@@ -1563,48 +1732,14 @@ class preprocessPlanningUnits(QueryWebSocketHandler):
         except Exception as e:
             print e.message
 
-#wss://db-server-blishten.c9users.io:8081/marxan-server/runMarxan?user=andrew&project=Tonga%20marine%2030km2
-#starts a Marxan run on the server and streams back the output as websockets
-class runMarxan(MarxanWebSocketHandler):
-    def open(self):
-        super(runMarxan, self).open()
-        self.send_response({'info': "Running Marxan", 'status':'Started'})
-        #set the current folder to the project folder so files can be found in the input.dat file
-        if (os.path.exists(self.folder_project)):
-            os.chdir(self.folder_project)
-            #delete all of the current output files
-            _deleteAllFiles(self.folder_output)
-            #run marxan - the Subprocess.STREAM option does not work on Windows - see here: https://www.tornadoweb.org/en/stable/process.html?highlight=Subprocess#tornado.process.Subprocess
-            #the "exec " in front allows you to get the pid of the child process, i.e. marxan, and therefore to be able to kill the process using os.kill(pid, signal.SIGTERM) instead of the tornado process - see here: https://stackoverflow.com/questions/4789837/how-to-terminate-a-python-subprocess-launched-with-shell-true/4791612#4791612
-            self.app = Subprocess(["exec " + MARXAN_EXECUTABLE], stdout=Subprocess.STREAM, stdin=subprocess.PIPE, shell=True)
-            #return the pid so that the process can be stopped
-            self.send_response({'pid': self.app.pid, 'status':'pid'})
-            IOLoop.current().spawn_callback(self.stream_output)
-            self.app.stdin.write('\n') # to end the marxan process by sending ENTER to the stdin
-        else:
-            self.send_response({'error': "Project '" + self.get_argument("project") + "' does not exist", 'status': 'Finished', 'project': self.get_argument("project"), 'user': self.get_argument("user")})
-            #close the websocket
-            self.close()
-
-    @gen.coroutine
-    def stream_output(self):
-        try:
-            while True:
-                # line = yield self.app.stdout.read_bytes(4096)
-                line = yield self.app.stdout.read_bytes(4096, partial=True)
-                self.send_response({'info':line, 'status':'Running'})
-        except StreamClosedError: #fired when the stream closes
-            self.send_response({'info': 'Run completed', 'status': 'Finished', 'project': self.get_argument("project"), 'user': self.get_argument("user")})
-            #close the websocket
-            self.close()
-
 ####################################################################################################################################################################################################################################################################
 ## tornado functions
 ####################################################################################################################################################################################################################################################################
 
 def make_app():
     return tornado.web.Application([
-        ("/marxan-server/createUser", createUser),
+        ("/marxan-server/getProjects", getProjects),
+        ("/marxan-server/getProject", getProject),
         ("/marxan-server/createProject", createProject),
         ("/marxan-server/createImportProject", createImportProject),
         ("/marxan-server/upgradeProject", upgradeProject),
@@ -1613,6 +1748,7 @@ def make_app():
         ("/marxan-server/createProjectGroup", createProjectGroup),
         ("/marxan-server/deleteProjects", deleteProjects),
         ("/marxan-server/renameProject", renameProject),
+        ("/marxan-server/updateProjectParameters", updateProjectParameters),
         ("/marxan-server/getCountries", getCountries),
         ("/marxan-server/getPlanningUnitGrids", getPlanningUnitGrids),
         ("/marxan-server/createPlanningUnitGrid", createPlanningUnitGrid),
@@ -1620,26 +1756,28 @@ def make_app():
         ("/marxan-server/uploadTilesetToMapBox", uploadTilesetToMapBox),
         ("/marxan-server/uploadShapefile", uploadShapefile),
         ("/marxan-server/uploadFile", uploadFile),
-        ("/marxan-server/importFeature", importFeature),
         ("/marxan-server/importPlanningUnitGrid", importPlanningUnitGrid),
         ("/marxan-server/createFeaturePreprocessingFileFromImport", createFeaturePreprocessingFileFromImport),
+        ("/marxan-server/createUser", createUser),
         ("/marxan-server/validateUser", validateUser),
         ("/marxan-server/getUser", getUser),
         ("/marxan-server/getUsers", getUsers),
-        ("/marxan-server/getProject", getProject),
+        ("/marxan-server/updateUserParameters", updateUserParameters),
         ("/marxan-server/getFeature", getFeature),
+        ("/marxan-server/importFeature", importFeature),
         ("/marxan-server/getFeaturePlanningUnits", getFeaturePlanningUnits),
+        ("/marxan-server/getPlanningUnitsData", getPlanningUnitsData),
+        ("/marxan-server/updatePUFile", updatePUFile),
         ("/marxan-server/getSpeciesData", getSpeciesData),
         ("/marxan-server/getAllSpeciesData", getAllSpeciesData),
         ("/marxan-server/getSpeciesPreProcessingData", getSpeciesPreProcessingData),
-        ("/marxan-server/getPlanningUnitsData", getPlanningUnitsData),
+        ("/marxan-server/updateSpecFile", updateSpecFile),
         ("/marxan-server/getProtectedAreaIntersectionsData", getProtectedAreaIntersectionsData),
         ("/marxan-server/getMarxanLog", getMarxanLog),
         ("/marxan-server/getBestSolution", getBestSolution),
         ("/marxan-server/getOutputSummary", getOutputSummary),
         ("/marxan-server/getSummedSolution", getSummedSolution),
         ("/marxan-server/getResults", getResults),
-        ("/marxan-server/getProjects", getProjects),
         ("/marxan-server/getSolution", getSolution),
         ("/marxan-server/getMissingValues", getMissingValues),
         ("/marxan-server/preprocessFeature", preprocessFeature),
@@ -1647,11 +1785,8 @@ def make_app():
         ("/marxan-server/preprocessProtectedAreas", preprocessProtectedAreas),
         ("/marxan-server/runMarxan", runMarxan),
         ("/marxan-server/stopMarxan", stopMarxan),
-        ("/marxan-server/updateSpecFile", updateSpecFile),
-        ("/marxan-server/updatePUFile", updatePUFile),
-        ("/marxan-server/updateUserParameters", updateUserParameters),
-        ("/marxan-server/updateProjectParameters", updateProjectParameters)
-    ])
+        ("/marxan-server/testRoleAuthorisation", testRoleAuthorisation)
+    ], cookie_secret=COOKIE_RANDOM_VALUE)
 
 if __name__ == "__main__":
     try:
