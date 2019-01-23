@@ -35,13 +35,17 @@ import signal
 ## constant declarations
 ####################################################################################################################################################################################################################################################################
 ##SECURITY SETTINGS
+DISABLE_SECURITY = False                                                        # Set to True to turn off all security, i.e. authentication and authorisation
 COOKIE_RANDOM_VALUE = "__TODO:_GENERATE_YOUR_OWN_RANDOM_VALUE_HERE__"           # This must be set to a random value as it is used to encrypt and sign cookies - if it is not changed then malicious hackers can use this default value to produce their own signed cookies compromising security
 PERMITTED_DOMAINS = ["https://marxan-client-blishten.c9users.io:8081/"]         # Add domains that you want to allow to access your services and data - this only applies to cross-domain requests and is not relevant if the client and server software are on the same machine
 PERMITTED_METHODS = ["createUser","validateUser"]                               # REST services that have no authentication/authorisation 
 ROLE_UNAUTHORISED_METHODS = {                                                   # Add REST services that you want to lock down to specific roles - a class added to an array will make that method unavailable for that role
+    "ReadOnly": ["createProject","createImportProject","upgradeProject","deleteProject","cloneProject","createProjectGroup","deleteProjects","renameProject","updateProjectParameters","getCountries","getPlanningUnitGrids","createPlanningUnitGrid","deletePlanningUnitGrid","uploadTilesetToMapBox","uploadShapefile","uploadFile","importPlanningUnitGrid","createFeaturePreprocessingFileFromImport","createUser","getUsers","updateUserParameters","getFeature","importFeature","getPlanningUnitsData","updatePUFile","getSpeciesData","getAllSpeciesData","getSpeciesPreProcessingData","updateSpecFile","getProtectedAreaIntersectionsData","getMarxanLog","getBestSolution","getOutputSummary","getSummedSolution","getMissingValues","preprocessFeature","preprocessPlanningUnits","preprocessProtectedAreas","runMarxan","stopMarxan","testRoleAuthorisation"],
     "User": ['testRoleAuthorisation','deleteProject'],
     "Admin": []
 }
+NOT_AUTHENTICATED_ERROR = "Request could not be authenticated. No secure cookie found."
+NO_REFERER_ERROR = "The request header does not specify a referer and this is required for CORS access."
 CONNECTION_STRING = "dbname='biopama' host='localhost' user='jrc' password='thargal88'"
 MARXAN_FOLDER = "/home/ubuntu/workspace/marxan/Marxan243/MarxanData_unix/"
 MARXAN_EXECUTABLE = MARXAN_FOLDER + "MarOpt_v243_Linux64"
@@ -682,6 +686,8 @@ def _requestIsWebSocket(request):
 
 #to prevent CORS errors in the client
 def _checkCORS(obj):
+    if DISABLE_SECURITY:
+        return 
     #get the referer
     if "Referer" in obj.request.headers.keys():
         referer = obj.request.headers.get("Referer")
@@ -694,17 +700,21 @@ def _checkCORS(obj):
         else:
             raise HTTPError(403, "The origin '" + referer + "' does not have permission to access the service (CORS error)", reason = "The origin '" + referer + "' does not have permission to access the service (CORS error)")
     else:
-        raise HTTPError(403, "The request header does not specify a referer and this is required for CORS access.", reason = "The request header does not specify a referer and this is required for CORS access.")
+        raise HTTPError(403, NO_REFERER_ERROR, reason = NO_REFERER_ERROR)
 
 #test all requests to make sure the user is authenticated - if not returns a 403
 def _authenticate(obj):
+    if DISABLE_SECURITY:
+        return 
     #check for an authenticated user
     if not obj.current_user: 
         #if not return a 401
-        raise HTTPError(401, "Request could not be authenticated. No secure cookie found.", reason = "Request could not be authenticated. No secure cookie found.")
+        raise HTTPError(401, NOT_AUTHENTICATED_ERROR, reason = NOT_AUTHENTICATED_ERROR)
 
 #tests the role has access to the method
 def _authoriseRole(obj, method):
+    if DISABLE_SECURITY:
+        return 
     #get the requested role
     role = obj.get_secure_cookie("role")
     #get the list of methods that this role cannot access
@@ -714,10 +724,12 @@ def _authoriseRole(obj, method):
 
 #tests if the user can access the service - Admin users can access projects belonging to other users
 def _authoriseUser(obj):
+    if DISABLE_SECURITY:
+        return 
     #if the call includes a user argument
     if "user" in obj.request.arguments.keys():
-        #see if the user argument matches the obj.current_user
-        if (obj.get_argument("user") != obj.current_user):
+        #see if the user argument matches the obj.current_user and is not the _clumping project (this is the only exception as it is needed for the clumping)
+        if ((obj.get_argument("user") != obj.current_user) and (obj.get_argument("user") != "_clumping")):
             #get the requested role
             role = obj.get_secure_cookie("role")
             if role != "Admin":
@@ -824,6 +836,10 @@ class PostGIS():
 ####################################################################################################################################################################################################################################################################
 
 class MarxanRESTHandler(tornado.web.RequestHandler):
+    #to prevent CORS errors in the client
+    def set_default_headers(self):
+        if DISABLE_SECURITY:
+            self.set_header("Access-Control-Allow-Origin", "*")
 
     #get the current user
     def get_current_user(self):
@@ -867,7 +883,7 @@ class MarxanRESTHandler(tornado.web.RequestHandler):
             else:
                 self.write(content)
     
-    #uncaught exception handling that captures any exceptions in the descendent classes and writes them back to the client
+    #uncaught exception handling that captures any exceptions in the descendent classes and writes them back to the client - RETURNING AN HTTP STATUS CODE OF 200 CAN BE CAUGHT BY JSONP
     # def write_error(self, status_code, **kwargs):
         # if "exc_info" in kwargs:
         #     trace = ""
@@ -1112,30 +1128,34 @@ class getProject(MarxanRESTHandler):
     def get(self):
         #validate the input arguments
         _validateArguments(self.request.arguments, ['user','project']) 
-        #if the project name is an empty string, then get the first project for the user
-        if (self.get_argument("project") == ""):
-            _getProjects(self)
-            project = self.projects[0]['name']
-            #set the project argument
-            self.request.arguments['project'] = [project]
-            #and set the paths to this project
-            _setFolderPaths(self, self.request.arguments)
-        #get the project data from the input.dat file
-        _getProjectData(self)
-        #get the species data from the spec.dat file and the PostGIS database
-        _getSpeciesData(self)
-        #get all species data from the PostGIS database
-        _getAllSpeciesData(self)
-        #get the species preprocessing from the feature_preprocessing.dat file
-        _getSpeciesPreProcessingData(self)
-        #get the planning units information
-        _getPlanningUnitsData(self)
-        #get the protected area intersections
-        _getProtectedAreaIntersectionsData(self)
-        #set the project as the users last project so it will load on login
-        _updateParameters(self.folder_user + USER_DATA_FILENAME, {'LASTPROJECT': self.get_argument("project")})
-        #set the response
-        self.send_response({'project': self.projectData["project"], 'metadata': self.projectData["metadata"], 'files': self.projectData["files"], 'runParameters': self.projectData["runParameters"], 'renderer': self.projectData["renderer"], 'features': self.speciesData.to_dict(orient="records"), 'allFeatures': self.allSpeciesData.to_dict(orient="records"), 'feature_preprocessing': self.speciesPreProcessingData.to_dict(orient="split")["data"], 'planning_units': self.planningUnitsData, 'protected_area_intersections': self.protectedAreaIntersectionsData})
+        #if the guest user is getting a project there will be none
+        if (self.current_user == "guest"):
+            self.send_response({'error': 'Logged in as a read-only user'})
+        else:
+            #if the project name is an empty string, then get the first project for the user
+            if (self.get_argument("project") == ""):
+                _getProjects(self)
+                project = self.projects[0]['name']
+                #set the project argument
+                self.request.arguments['project'] = [project]
+                #and set the paths to this project
+                _setFolderPaths(self, self.request.arguments)
+            #get the project data from the input.dat file
+            _getProjectData(self)
+            #get the species data from the spec.dat file and the PostGIS database
+            _getSpeciesData(self)
+            #get all species data from the PostGIS database
+            _getAllSpeciesData(self)
+            #get the species preprocessing from the feature_preprocessing.dat file
+            _getSpeciesPreProcessingData(self)
+            #get the planning units information
+            _getPlanningUnitsData(self)
+            #get the protected area intersections
+            _getProtectedAreaIntersectionsData(self)
+            #set the project as the users last project so it will load on login
+            _updateParameters(self.folder_user + USER_DATA_FILENAME, {'LASTPROJECT': self.get_argument("project")})
+            #set the response
+            self.send_response({'project': self.projectData["project"], 'metadata': self.projectData["metadata"], 'files': self.projectData["files"], 'runParameters': self.projectData["runParameters"], 'renderer': self.projectData["renderer"], 'features': self.speciesData.to_dict(orient="records"), 'allFeatures': self.allSpeciesData.to_dict(orient="records"), 'feature_preprocessing': self.speciesPreProcessingData.to_dict(orient="split")["data"], 'planning_units': self.planningUnitsData, 'protected_area_intersections': self.protectedAreaIntersectionsData})
 
 #gets feature information from postgis
 #https://db-server-blishten.c9users.io:8081/marxan-server/getFeature?oid=63407942&callback=__jp2
@@ -1455,6 +1475,8 @@ class MarxanWebSocketHandler(tornado.websocket.WebSocketHandler):
 
     #check CORS access for the websocket
     def check_origin(self, origin):
+        if DISABLE_SECURITY:
+            return True
         #check the origin is in the permitted origins - the Origin header will not end in a forward slash
         if origin + "/" in PERMITTED_DOMAINS:
             return True
@@ -1463,6 +1485,10 @@ class MarxanWebSocketHandler(tornado.websocket.WebSocketHandler):
 
     #called when the websocket is opened - does authentication/authorisation then gets the folder paths for the user and optionally the project
     def open(self):
+        #set the start time of the websocket
+        self.startTime = datetime.datetime.now()
+        #set the folder paths for the user and optionally project
+        _setFolderPaths(self, self.request.arguments)
         #check the request is authenticated
         _authenticate(self)
         #get the requested method
@@ -1471,10 +1497,6 @@ class MarxanWebSocketHandler(tornado.websocket.WebSocketHandler):
         _authoriseRole(self, method)
         #check the user has access to the specific resource, i.e. the 'User' role cannot access projects from other users
         _authoriseUser(self)
-        #set the start time of the websocket
-        self.startTime = datetime.datetime.now()
-        #set the folder paths for the user and optionally project
-        _setFolderPaths(self, self.request.arguments)
 
     #sends the message with a timestamp
     def send_response(self, message):
@@ -1766,20 +1788,20 @@ def make_app():
         ("/marxan-server/getFeature", getFeature),
         ("/marxan-server/importFeature", importFeature),
         ("/marxan-server/getFeaturePlanningUnits", getFeaturePlanningUnits),
-        ("/marxan-server/getPlanningUnitsData", getPlanningUnitsData),
+        ("/marxan-server/getPlanningUnitsData", getPlanningUnitsData), #currently not used
         ("/marxan-server/updatePUFile", updatePUFile),
-        ("/marxan-server/getSpeciesData", getSpeciesData),
-        ("/marxan-server/getAllSpeciesData", getAllSpeciesData),
-        ("/marxan-server/getSpeciesPreProcessingData", getSpeciesPreProcessingData),
+        ("/marxan-server/getSpeciesData", getSpeciesData), #currently not used
+        ("/marxan-server/getAllSpeciesData", getAllSpeciesData), #currently not used
+        ("/marxan-server/getSpeciesPreProcessingData", getSpeciesPreProcessingData), #currently not used
         ("/marxan-server/updateSpecFile", updateSpecFile),
-        ("/marxan-server/getProtectedAreaIntersectionsData", getProtectedAreaIntersectionsData),
-        ("/marxan-server/getMarxanLog", getMarxanLog),
-        ("/marxan-server/getBestSolution", getBestSolution),
-        ("/marxan-server/getOutputSummary", getOutputSummary),
-        ("/marxan-server/getSummedSolution", getSummedSolution),
+        ("/marxan-server/getProtectedAreaIntersectionsData", getProtectedAreaIntersectionsData), #currently not used
+        ("/marxan-server/getMarxanLog", getMarxanLog), #currently not used - bugs in the Marxan output log
+        ("/marxan-server/getBestSolution", getBestSolution), #currently not used
+        ("/marxan-server/getOutputSummary", getOutputSummary), #currently not used
+        ("/marxan-server/getSummedSolution", getSummedSolution), #currently not used
         ("/marxan-server/getResults", getResults),
         ("/marxan-server/getSolution", getSolution),
-        ("/marxan-server/getMissingValues", getMissingValues),
+        ("/marxan-server/getMissingValues", getMissingValues), #currently not used
         ("/marxan-server/preprocessFeature", preprocessFeature),
         ("/marxan-server/preprocessPlanningUnits", preprocessPlanningUnits),
         ("/marxan-server/preprocessProtectedAreas", preprocessProtectedAreas),
