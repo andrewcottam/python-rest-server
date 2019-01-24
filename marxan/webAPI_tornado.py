@@ -40,10 +40,11 @@ COOKIE_RANDOM_VALUE = "__TODO:_GENERATE_YOUR_OWN_RANDOM_VALUE_HERE__"           
 PERMITTED_DOMAINS = ["https://marxan-client-blishten.c9users.io:8081/"]         # Add domains that you want to allow to access your services and data - this only applies to cross-domain requests and is not relevant if the client and server software are on the same machine
 PERMITTED_METHODS = ["createUser","validateUser"]                               # REST services that have no authentication/authorisation 
 ROLE_UNAUTHORISED_METHODS = {                                                   # Add REST services that you want to lock down to specific roles - a class added to an array will make that method unavailable for that role
-    "ReadOnly": ["createProject","createImportProject","upgradeProject","deleteProject","cloneProject","createProjectGroup","deleteProjects","renameProject","updateProjectParameters","getCountries","getPlanningUnitGrids","createPlanningUnitGrid","deletePlanningUnitGrid","uploadTilesetToMapBox","uploadShapefile","uploadFile","importPlanningUnitGrid","createFeaturePreprocessingFileFromImport","createUser","getUsers","updateUserParameters","getFeature","importFeature","getPlanningUnitsData","updatePUFile","getSpeciesData","getAllSpeciesData","getSpeciesPreProcessingData","updateSpecFile","getProtectedAreaIntersectionsData","getMarxanLog","getBestSolution","getOutputSummary","getSummedSolution","getMissingValues","preprocessFeature","preprocessPlanningUnits","preprocessProtectedAreas","runMarxan","stopMarxan","testRoleAuthorisation"],
+    "ReadOnly": ["createProject","createImportProject","upgradeProject","deleteProject","cloneProject","createProjectGroup","deleteProjects","renameProject","updateProjectParameters","getCountries","getPlanningUnitGrids","createPlanningUnitGrid","deletePlanningUnitGrid","uploadTilesetToMapBox","uploadShapefile","uploadFile","importPlanningUnitGrid","createFeaturePreprocessingFileFromImport","createUser","getUsers","updateUserParameters","getFeature","importFeature","getPlanningUnitsData","updatePUFile","getSpeciesData","getSpeciesPreProcessingData","updateSpecFile","getProtectedAreaIntersectionsData","getMarxanLog","getBestSolution","getOutputSummary","getSummedSolution","getMissingValues","preprocessFeature","preprocessPlanningUnits","preprocessProtectedAreas","runMarxan","stopMarxan","testRoleAuthorisation"],
     "User": ['testRoleAuthorisation','deleteProject'],
     "Admin": []
 }
+GUEST_USERNAME = "guest"
 NOT_AUTHENTICATED_ERROR = "Request could not be authenticated. No secure cookie found."
 NO_REFERER_ERROR = "The request header does not specify a referer and this is required for CORS access."
 CONNECTION_STRING = "dbname='biopama' host='localhost' user='jrc' password='thargal88'"
@@ -109,10 +110,10 @@ def _getUsers():
         users.remove("output")
     return [u for u in users if u[:1] != "_"]
     
-#gets the projects for the current user
-def _getProjects(obj):
+#gets the projects for the specified user
+def _getProjectsForUser(user):
     #get a list of folders underneath the users home folder
-    project_folders = glob.glob(MARXAN_FOLDER + obj.user + os.sep + "*/")
+    project_folders = glob.glob(MARXAN_FOLDER + user + os.sep + "*/")
     #sort the folders
     project_folders.sort()
     projects = []
@@ -124,11 +125,28 @@ def _getProjects(obj):
         if (project[:2] != "__"): #folders beginning with __ are system folders
             #get the data from the input file for this project
             tmpObj.project = project
-            tmpObj.folder_project = MARXAN_FOLDER + obj.user + os.sep + project + os.sep
+            tmpObj.folder_project = MARXAN_FOLDER + user + os.sep + project + os.sep
             _getProjectData(tmpObj)
             #create a dict to save the data
-            projects.append({'name': project,'description': tmpObj.projectData["metadata"]["DESCRIPTION"],'createdate': tmpObj.projectData["metadata"]["CREATEDATE"],'oldVersion': tmpObj.projectData["metadata"]["OLDVERSION"]})
-    obj.projects = projects
+            projects.append({'user': user, 'name': project,'description': tmpObj.projectData["metadata"]["DESCRIPTION"],'createdate': tmpObj.projectData["metadata"]["CREATEDATE"],'oldVersion': tmpObj.projectData["metadata"]["OLDVERSION"]})
+    return projects
+
+#gets all projects for all users
+def _getAllProjects():
+    allProjects = []
+    #get a list of users
+    users = _getUsers()
+    for user in users:
+        projects = _getProjectsForUser(user)
+        allProjects.extend(projects)
+    return allProjects
+
+#gets the projects for the current user
+def _getProjects(obj):
+    if ((obj.user == GUEST_USERNAME) or (obj.get_secure_cookie("role") == "Admin")):
+        obj.projects = _getAllProjects()
+    else:
+        obj.projects = _getProjectsForUser(obj.user)
 
 #creates a new empty project with the passed parameters
 def _createProject(obj, name):
@@ -729,7 +747,7 @@ def _authoriseUser(obj):
     #if the call includes a user argument
     if "user" in obj.request.arguments.keys():
         #see if the user argument matches the obj.current_user and is not the _clumping project (this is the only exception as it is needed for the clumping)
-        if ((obj.get_argument("user") != obj.current_user) and (obj.get_argument("user") != "_clumping")):
+        if ((obj.get_argument("user") != obj.current_user) and (obj.get_argument("user") != "_clumping") and (obj.current_user != GUEST_USERNAME)):
             #get the requested role
             role = obj.get_secure_cookie("role")
             if role != "Admin":
@@ -884,16 +902,16 @@ class MarxanRESTHandler(tornado.web.RequestHandler):
                 self.write(content)
     
     #uncaught exception handling that captures any exceptions in the descendent classes and writes them back to the client - RETURNING AN HTTP STATUS CODE OF 200 CAN BE CAUGHT BY JSONP
-    # def write_error(self, status_code, **kwargs):
-        # if "exc_info" in kwargs:
-        #     trace = ""
-        #     for line in traceback.format_exception(*kwargs["exc_info"]):
-        #         trace = trace + line
-        #     lastLine = traceback.format_exception(*kwargs["exc_info"])[len(traceback.format_exception(*kwargs["exc_info"]))-1]
-        #     self.set_status(status_code)
-        #     # self.set_status(200)
-        #     # self.send_response({"error":lastLine, "trace" : trace})
-        #     self.finish()
+    def write_error(self, status_code, **kwargs):
+        if "exc_info" in kwargs:
+            trace = ""
+            for line in traceback.format_exception(*kwargs["exc_info"]):
+                trace = trace + line
+            lastLine = traceback.format_exception(*kwargs["exc_info"])[len(traceback.format_exception(*kwargs["exc_info"]))-1]
+            # self.set_status(status_code)
+            self.set_status(200)
+            self.send_response({"error":lastLine, "trace" : trace})
+            self.finish()
     
 ####################################################################################################################################################################################################################################################################
 ## RequestHandler subclasses
@@ -1129,12 +1147,12 @@ class getProject(MarxanRESTHandler):
         #validate the input arguments
         _validateArguments(self.request.arguments, ['user','project']) 
         #if the guest user is getting a project there will be none
-        if (self.current_user == "guest"):
+        if  (self.get_argument("user")=="guest"):
             self.send_response({'error': 'Logged in as a read-only user'})
         else:
             #if the project name is an empty string, then get the first project for the user
             if (self.get_argument("project") == ""):
-                _getProjects(self)
+                self.projects = _getProjectsForUser(self.get_argument("user"))
                 project = self.projects[0]['name']
                 #set the project argument
                 self.request.arguments['project'] = [project]
@@ -1144,8 +1162,6 @@ class getProject(MarxanRESTHandler):
             _getProjectData(self)
             #get the species data from the spec.dat file and the PostGIS database
             _getSpeciesData(self)
-            #get all species data from the PostGIS database
-            _getAllSpeciesData(self)
             #get the species preprocessing from the feature_preprocessing.dat file
             _getSpeciesPreProcessingData(self)
             #get the planning units information
@@ -1155,7 +1171,7 @@ class getProject(MarxanRESTHandler):
             #set the project as the users last project so it will load on login
             _updateParameters(self.folder_user + USER_DATA_FILENAME, {'LASTPROJECT': self.get_argument("project")})
             #set the response
-            self.send_response({'project': self.projectData["project"], 'metadata': self.projectData["metadata"], 'files': self.projectData["files"], 'runParameters': self.projectData["runParameters"], 'renderer': self.projectData["renderer"], 'features': self.speciesData.to_dict(orient="records"), 'allFeatures': self.allSpeciesData.to_dict(orient="records"), 'feature_preprocessing': self.speciesPreProcessingData.to_dict(orient="split")["data"], 'planning_units': self.planningUnitsData, 'protected_area_intersections': self.protectedAreaIntersectionsData})
+            self.send_response({'user': self.get_argument("user"), 'project': self.projectData["project"], 'metadata': self.projectData["metadata"], 'files': self.projectData["files"], 'runParameters': self.projectData["runParameters"], 'renderer': self.projectData["renderer"], 'features': self.speciesData.to_dict(orient="records"), 'feature_preprocessing': self.speciesPreProcessingData.to_dict(orient="split")["data"], 'planning_units': self.planningUnitsData, 'protected_area_intersections': self.protectedAreaIntersectionsData})
 
 #gets feature information from postgis
 #https://db-server-blishten.c9users.io:8081/marxan-server/getFeature?oid=63407942&callback=__jp2
