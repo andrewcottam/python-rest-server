@@ -40,8 +40,8 @@ COOKIE_RANDOM_VALUE = "__TODO:_GENERATE_YOUR_OWN_RANDOM_VALUE_HERE__"           
 PERMITTED_DOMAINS = ["https://marxan-client-blishten.c9users.io:8081/"]         # Add domains that you want to allow to access your services and data - this only applies to cross-domain requests and is not relevant if the client and server software are on the same machine
 PERMITTED_METHODS = ["createUser","validateUser"]                               # REST services that have no authentication/authorisation 
 ROLE_UNAUTHORISED_METHODS = {                                                   # Add REST services that you want to lock down to specific roles - a class added to an array will make that method unavailable for that role
-    "ReadOnly": ["createProject","createImportProject","upgradeProject","deleteProject","cloneProject","createProjectGroup","deleteProjects","renameProject","updateProjectParameters","getCountries","getPlanningUnitGrids","createPlanningUnitGrid","deletePlanningUnitGrid","uploadTilesetToMapBox","uploadShapefile","uploadFile","importPlanningUnitGrid","createFeaturePreprocessingFileFromImport","createUser","getUsers","updateUserParameters","getFeature","importFeature","getPlanningUnitsData","updatePUFile","getSpeciesData","getSpeciesPreProcessingData","updateSpecFile","getProtectedAreaIntersectionsData","getMarxanLog","getBestSolution","getOutputSummary","getSummedSolution","getMissingValues","preprocessFeature","preprocessPlanningUnits","preprocessProtectedAreas","runMarxan","stopMarxan","testRoleAuthorisation"],
-    "User": ['testRoleAuthorisation','deleteProject'],
+    "ReadOnly": ["createProject","createImportProject","upgradeProject","deleteProject","cloneProject","createProjectGroup","deleteProjects","renameProject","updateProjectParameters","getCountries","getPlanningUnitGrids","createPlanningUnitGrid","deletePlanningUnitGrid","uploadTilesetToMapBox","uploadShapefile","uploadFile","importPlanningUnitGrid","createFeaturePreprocessingFileFromImport","createUser","getUsers","updateUserParameters","getFeature","importFeature","getPlanningUnitsData","updatePUFile","getSpeciesData","getSpeciesPreProcessingData","updateSpecFile","getProtectedAreaIntersectionsData","getMarxanLog","getBestSolution","getOutputSummary","getSummedSolution","getMissingValues","preprocessFeature","preprocessPlanningUnits","preprocessProtectedAreas","runMarxan","stopMarxan","testRoleAuthorisation",'deleteFeature'],
+    "User": ['testRoleAuthorisation','deleteProject','deleteFeature'],
     "Admin": []
 }
 GUEST_USERNAME = "guest"
@@ -639,6 +639,14 @@ def _uploadTilesetToMapbox(feature_class_name, mapbox_layer_name):
     #delete the temporary shapefile file and zip file
     _deleteZippedShapefile(MARXAN_FOLDER, feature_class_name + ".zip", feature_class_name)
     return uploadId
+    
+#deletes a feature
+def _deleteFeature(feature_class_name):
+    #delete the feature class
+    postgis = PostGIS()
+    postgis.execute(sql.SQL("DROP TABLE marxan.{};").format(sql.Identifier(feature_class_name)))
+    #delete the record in the metadata_interest_features
+    postgis.execute("DELETE FROM marxan.metadata_interest_features WHERE feature_class_name =%s;", [feature_class_name])
     
 #imports the feature from a zipped shapefile (given by filename)
 def _importFeature(filename, name, description):
@@ -1450,6 +1458,16 @@ class importFeature(MarxanRESTHandler):
         #set the response
         self.send_response({'info': "File '" + self.get_argument('filename') + "' imported", 'file': self.get_argument('filename'), 'id': id})
 
+#deletes a feature from the PostGIS database
+#https://db-server-blishten.c9users.io:8081/marxan-server/deleteFeature?feature_name=test_feature1&callback=__jp5
+class deleteFeature(MarxanRESTHandler):
+    def get(self):
+        #validate the input arguments
+        _validateArguments(self.request.arguments, ['feature_name'])   
+        _deleteFeature(self.get_argument('feature_name'))
+        #set the response
+        self.send_response({'info': "Feature deleted"})
+
 #imports a zipped planning unit shapefile which has been uploaded to the marxan root folder into PostGIS as a planning unit grid feature class
 #https://db-server-blishten.c9users.io:8081/marxan-server/importPlanningUnitGrid?filename=pu_sample.zip&name=pu_test&description=wibble&callback=__jp5
 class importPlanningUnitGrid(MarxanRESTHandler):
@@ -1803,6 +1821,7 @@ def make_app():
         ("/marxan-server/updateUserParameters", updateUserParameters),
         ("/marxan-server/getFeature", getFeature),
         ("/marxan-server/importFeature", importFeature),
+        ("/marxan-server/deleteFeature", deleteFeature),
         ("/marxan-server/getFeaturePlanningUnits", getFeaturePlanningUnits),
         ("/marxan-server/getPlanningUnitsData", getPlanningUnitsData), #currently not used
         ("/marxan-server/updatePUFile", updatePUFile),
