@@ -45,6 +45,7 @@ ROLE_UNAUTHORISED_METHODS = {                                                   
     "Admin": []
 }
 GUEST_USERNAME = "guest"
+GUEST_USER_ENABLED = True
 NOT_AUTHENTICATED_ERROR = "Request could not be authenticated. No secure cookie found."
 NO_REFERER_ERROR = "The request header does not specify a referer and this is required for CORS access."
 CONNECTION_STRING = "dbname='biopama' host='localhost' user='jrc' password='thargal88'"
@@ -1110,7 +1111,10 @@ class deletePlanningUnitGrid(MarxanRESTHandler):
 class validateUser(MarxanRESTHandler):
     def get(self):
         #validate the input arguments
-        _validateArguments(self.request.arguments, ['user','password'])   
+        _validateArguments(self.request.arguments, ['user','password'])  
+        #see if the guest user is enabled
+        if ((not GUEST_USER_ENABLED) and (self.get_argument("user") == GUEST_USERNAME)):
+            raise MarxanServicesError("The guest user is not enabled on this server")        
         try:
             #get the user data from the user.dat file
             _getUserData(self)
