@@ -724,9 +724,9 @@ def _checkCORS(obj):
             obj.set_header("Access-Control-Allow-Origin", origin)
             obj.set_header("Access-Control-Allow-Credentials", "true")
         else:
-            raise HTTPError(403, "The origin '" + referer + "' does not have permission to access the service (CORS error)", reason = "The origin '" + referer + "' does not have permission to access the service (CORS error)")
+            raise HTTPError(403, "The origin '" + referer + "' does not have permission to access the service (CORS error)") #, reason = "The origin '" + referer + "' does not have permission to access the service (CORS error)"
     else:
-        raise HTTPError(403, NO_REFERER_ERROR, reason = NO_REFERER_ERROR)
+        raise HTTPError(403, NO_REFERER_ERROR)
 
 #test all requests to make sure the user is authenticated - if not returns a 403
 def _authenticate(obj):
@@ -735,7 +735,7 @@ def _authenticate(obj):
     #check for an authenticated user
     if not obj.current_user: 
         #if not return a 401
-        raise HTTPError(401, NOT_AUTHENTICATED_ERROR, reason = NOT_AUTHENTICATED_ERROR)
+        raise HTTPError(401, NOT_AUTHENTICATED_ERROR)
 
 #tests the role has access to the method
 def _authoriseRole(obj, method):
@@ -746,7 +746,7 @@ def _authoriseRole(obj, method):
     #get the list of methods that this role cannot access
     unauthorised = ROLE_UNAUTHORISED_METHODS[role]
     if method in unauthorised:
-        raise HTTPError(403, "The '" + role + "' role does not have permission to access the '" + method + "' service", reason = "The '" + role + "' role does not have permission to access the '" + method + "' service")
+        raise HTTPError(403, "The '" + role + "' role does not have permission to access the '" + method + "' service")
 
 #tests if the user can access the service - Admin users can access projects belonging to other users
 def _authoriseUser(obj):
@@ -759,7 +759,7 @@ def _authoriseUser(obj):
             #get the requested role
             role = obj.get_secure_cookie("role")
             if role != "Admin":
-                raise HTTPError(403, "The user '" + obj.current_user + "' has no permission to access a project of another user", reason = "The user '" + obj.current_user + "' has no permission to access a project of another user")    
+                raise HTTPError(403, "The user '" + obj.current_user + "' has no permission to access a project of another user")    
     
 ####################################################################################################################################################################################################################################################################
 ## generic classes
@@ -916,9 +916,12 @@ class MarxanRESTHandler(tornado.web.RequestHandler):
             for line in traceback.format_exception(*kwargs["exc_info"]):
                 trace = trace + line
             lastLine = traceback.format_exception(*kwargs["exc_info"])[len(traceback.format_exception(*kwargs["exc_info"]))-1]
-            # self.set_status(status_code)
+            #when an error is encountered, the headers are reset causing CORS errors - so set them again here
+            if not DISABLE_SECURITY:
+                _checkCORS(self)
+            # self.set_status(status_code) #this will return an HTTP server error rather than a 200 status code
             self.set_status(200)
-            self.send_response({"error":lastLine, "trace" : trace})
+            self.send_response({"error": lastLine, "trace" : trace})
             self.finish()
     
 ####################################################################################################################################################################################################################################################################
@@ -953,7 +956,7 @@ class createProject(MarxanRESTHandler):
         #create the pu.dat file
         _createPuFile(self, self.get_argument('planning_grid_name'))
         #set the response
-        self.send_response({'info': "Project '" + self.get_argument('project') + "' created", 'name': self.get_argument('project')})
+        self.send_response({'info': "Project '" + self.get_argument('project') + "' created", 'name': self.get_argument('project'), 'user': self.get_argument('user')})
 
 #creates a simple project for the import wizard
 #POST ONLY
@@ -1154,10 +1157,12 @@ class getProject(MarxanRESTHandler):
     def get(self):
         #validate the input arguments
         _validateArguments(self.request.arguments, ['user','project']) 
-        #if the guest user is getting a project there will be none
-        if  (self.get_argument("user")=="guest"):
-            self.send_response({'error': 'Logged in as a read-only user'})
+        if (self.get_argument("user") == GUEST_USERNAME):
+            self.send_response({'error': "Logged on as read-only guest user"})
         else:
+            #see if the project exists
+            if not os.path.exists(self.folder_project):
+                raise MarxanServicesError("The project '" + self.get_argument("project") + "' no longer exists")
             #if the project name is an empty string, then get the first project for the user
             if (self.get_argument("project") == ""):
                 self.projects = _getProjectsForUser(self.get_argument("user"))
@@ -1515,7 +1520,7 @@ class MarxanWebSocketHandler(tornado.websocket.WebSocketHandler):
         if origin + "/" in PERMITTED_DOMAINS:
             return True
         else:
-            raise HTTPError(403, "The origin '" + origin + "' does not have permission to access the service (CORS error)", reason = "The origin '" + origin + "' does not have permission to access the service (CORS error)")
+            raise HTTPError(403, "The origin '" + origin + "' does not have permission to access the service (CORS error)")
 
     #called when the websocket is opened - does authentication/authorisation then gets the folder paths for the user and optionally the project
     def open(self):
