@@ -38,10 +38,10 @@ import signal
 DISABLE_SECURITY = False                                                        # Set to True to turn off all security, i.e. authentication and authorisation
 COOKIE_RANDOM_VALUE = "__TODO:_GENERATE_YOUR_OWN_RANDOM_VALUE_HERE__"           # This must be set to a random value as it is used to encrypt and sign cookies - if it is not changed then malicious hackers can use this default value to produce their own signed cookies compromising security
 PERMITTED_DOMAINS = ["https://marxan-client-blishten.c9users.io:8081/"]         # Add domains that you want to allow to access your services and data - this only applies to cross-domain requests and is not relevant if the client and server software are on the same machine
-PERMITTED_METHODS = ["createUser","validateUser"]                               # REST services that have no authentication/authorisation 
+PERMITTED_METHODS = ["createUser","validateUser","resendPassword"]              # REST services that have no authentication/authorisation 
 ROLE_UNAUTHORISED_METHODS = {                                                   # Add REST services that you want to lock down to specific roles - a class added to an array will make that method unavailable for that role
-    "ReadOnly": ["createProject","createImportProject","upgradeProject","deleteProject","cloneProject","createProjectGroup","deleteProjects","renameProject","updateProjectParameters","getCountries","getPlanningUnitGrids","createPlanningUnitGrid","deletePlanningUnitGrid","uploadTilesetToMapBox","uploadShapefile","uploadFile","importPlanningUnitGrid","createFeaturePreprocessingFileFromImport","createUser","getUsers","updateUserParameters","getFeature","importFeature","getPlanningUnitsData","updatePUFile","getSpeciesData","getSpeciesPreProcessingData","updateSpecFile","getProtectedAreaIntersectionsData","getMarxanLog","getBestSolution","getOutputSummary","getSummedSolution","getMissingValues","preprocessFeature","preprocessPlanningUnits","preprocessProtectedAreas","runMarxan","stopMarxan","testRoleAuthorisation",'deleteFeature'],
-    "User": ['testRoleAuthorisation','deleteProject','deleteFeature'],
+    "ReadOnly": ["createProject","createImportProject","upgradeProject","deleteProject","cloneProject","createProjectGroup","deleteProjects","renameProject","updateProjectParameters","getCountries","getPlanningUnitGrids","createPlanningUnitGrid","deletePlanningUnitGrid","uploadTilesetToMapBox","uploadShapefile","uploadFile","importPlanningUnitGrid","createFeaturePreprocessingFileFromImport","createUser","getUsers","updateUserParameters","getFeature","importFeature","getPlanningUnitsData","updatePUFile","getSpeciesData","getSpeciesPreProcessingData","updateSpecFile","getProtectedAreaIntersectionsData","getMarxanLog","getBestSolution","getOutputSummary","getSummedSolution","getMissingValues","preprocessFeature","preprocessPlanningUnits","preprocessProtectedAreas","runMarxan","stopMarxan","testRoleAuthorisation",'deleteFeature','deleteUser'],
+    "User": ['testRoleAuthorisation','deleteProject','deleteFeature','getUsers','deleteUser'],
     "Admin": []
 }
 GUEST_USERNAME = "guest"
@@ -99,7 +99,7 @@ def _createUser(obj, user, fullname, email, password, mapboxaccesstoken):
     #update the user.dat file parameters
     _updateParameters(obj.folder_user + USER_DATA_FILENAME, {'NAME': fullname,'EMAIL': email,'PASSWORD': password,'MAPBOXACCESSTOKEN': mapboxaccesstoken})
 
-#gets a list of users
+#gets a simple list of users
 def _getUsers():
     #get a list of folders underneath the marxan home folder
     user_folders = glob.glob(MARXAN_FOLDER + "*/")
@@ -110,6 +110,23 @@ def _getUsers():
     if "output" in users: 
         users.remove("output")
     return [u for u in users if u[:1] != "_"]
+    
+def _getUsersData(users):
+    #gets all the users data for the passed users
+    users.sort()
+    usersData = []
+    #create a extendable object to hold the user data
+    tmpObj = ExtendableObject()
+    #iterate through the users
+    for user in users:
+        tmpObj.folder_user = MARXAN_FOLDER + user + os.sep
+        #get the data for the user
+        _getUserData(tmpObj)
+        #create a dict to save the data
+        combinedDict = tmpObj.userData.copy() 
+        combinedDict.update({'user': user})
+        usersData.append(combinedDict)
+    return usersData         
     
 #gets the projects for the specified user
 def _getProjectsForUser(user):
@@ -137,6 +154,8 @@ def _getAllProjects():
     allProjects = []
     #get a list of users
     users = _getUsers()
+    #get the data for each user
+    _getUsersData(users)
     for user in users:
         projects = _getProjectsForUser(user)
         allProjects.extend(projects)
@@ -678,15 +697,19 @@ def _importPlanningUnitGrid(filename, name, description):
     rootfilename = _unzipFile(filename) 
     #import the shapefile into PostGIS
     postgis = PostGIS()
-    postgis.importShapefile(rootfilename + ".shp", rootfilename, "EPSG:3410")
-    #create an index
-    postgis.execute(sql.SQL("CREATE INDEX idx_" + uuid.uuid4().hex + " ON marxan.{} USING GIST (wkb_geometry);").format(sql.Identifier(rootfilename)))
-    #create a record for this new feature in the metadata_planning_units table
-    feature_class_name = postgis.execute("INSERT INTO marxan.metadata_planning_units(feature_class_name,alias,description,creation_date) VALUES (%s,%s,%s,now()) RETURNING feature_class_name;", [rootfilename, name, description], "One")[0]
-    #upload to mapbox
-    uploadId = _uploadTileset(MARXAN_FOLDER + filename, rootfilename)
-    #delete the shapefile and the zip file
-    _deleteZippedShapefile(MARXAN_FOLDER, filename, rootfilename)
+    try:
+        postgis.importShapefile(rootfilename + ".shp", rootfilename, "EPSG:3410")
+        #create an index
+        postgis.execute(sql.SQL("CREATE INDEX idx_" + uuid.uuid4().hex + " ON marxan.{} USING GIST (wkb_geometry);").format(sql.Identifier(rootfilename)))
+        #create a record for this new feature in the metadata_planning_units table
+        feature_class_name = postgis.execute("INSERT INTO marxan.metadata_planning_units(feature_class_name,alias,description,creation_date) VALUES (%s,%s,%s,now()) RETURNING feature_class_name;", [rootfilename, name, description], "One")[0]
+        #upload to mapbox
+        uploadId = _uploadTileset(MARXAN_FOLDER + filename, rootfilename)
+    except (MarxanServicesError):
+        raise
+    finally:
+        #delete the shapefile and the zip file
+        _deleteZippedShapefile(MARXAN_FOLDER, filename, rootfilename)
     return {'feature_class_name': feature_class_name, 'uploadId': uploadId}
     
 #populates the data in the feature_preprocessing.dat file from an existing puvspr.dat file, e.g. after an import from an old version of Marxan
@@ -919,7 +942,10 @@ class MarxanRESTHandler(tornado.web.RequestHandler):
             lastLine = traceback.format_exception(*kwargs["exc_info"])[len(traceback.format_exception(*kwargs["exc_info"]))-1]
             #when an error is encountered, the headers are reset causing CORS errors - so set them again here
             if not DISABLE_SECURITY:
-                _checkCORS(self)
+                try:
+                    _checkCORS(self) #may throw a 403
+                except: #so handle the exception
+                    pass
             # self.set_status(status_code) #this will return an HTTP server error rather than a 200 status code
             self.set_status(200)
             self.send_response({"error": lastLine, "trace" : trace})
@@ -1132,6 +1158,13 @@ class validateUser(MarxanRESTHandler):
             #invalid login
             raise MarxanServicesError("Invalid login")    
 
+#resends the password to the passed email address (NOT CURRENTLY IMPLEMENTED)
+class resendPassword(MarxanRESTHandler):
+    def get(self):
+        #set the response
+        self.send_response({'info': 'Not currently implemented'})
+        
+
 #gets a users information from the user folder
 #curl 'https://db-server-blishten.c9users.io:8081/marxan-server/getUser?user=andrew&callback=__jp1' -H 'If-None-Match: "0798406453417c47c0b5ab5bd11d56a60fb4df7d"' -H 'Accept-Encoding: gzip, deflate, br' -H 'Accept-Language: en-US,en;q=0.9,fr;q=0.8' -H 'User-Agent: Mozilla/5.0 (Windows NT 10.0; WOW64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/70.0.3538.110 Safari/537.36' -H 'Accept: */*' -H 'Referer: https://marxan-client-blishten.c9users.io:8081/' -H 'Cookie: c9.live.user.jwt=eyJ0eXAiOiJKV1QiLCJhbGciOiJIUzI1NiJ9.eyJpZCI6IjE2MzQxNDgiLCJuYW1lIjoiYmxpc2h0ZW4iLCJjb2RlIjoiOWNBUzdEQldsdWYwU2oyU01ZaEYiLCJpYXQiOjE1NDgxNDg0MTQsImV4cCI6MTU0ODIzNDgxNH0.yJ9mPz4bM7L3htL8vXVFMCcQpTO0pkRvhNHJP9WnJo8; c9.live.user.sso=eyJ0eXAiOiJKV1QiLCJhbGciOiJIUzI1NiJ9.eyJpZCI6IjE2MzQxNDgiLCJuYW1lIjoiYmxpc2h0ZW4iLCJpYXQiOjE1NDgxNDg0MTQsImV4cCI6MTU0ODIzNDgxNH0.ifW5qlkpC19iyMNBgZLtGZzxuMRyHKWldGg3He-__gI; role="2|1:0|10:1548151226|4:role|8:QWRtaW4=|d703b0f18c81cf22c85f41c536f99589ce11492925d85833e78d3d66f4d7fd62"; user="2|1:0|10:1548151226|4:user|8:YW5kcmV3|e5ed3b87979273b1b8d1b8983310280507941fe05fb665847e7dd5dacf36348d"' -H 'Connection: keep-alive' --compressed
 class getUser(MarxanRESTHandler):
@@ -1152,9 +1185,21 @@ class getUsers(MarxanRESTHandler):
     def get(self):
         #get the users
         users = _getUsers()
+        #get all the data for those users
+        usersData = _getUsersData(users)
         #set the response
-        self.send_response({'info': users})
+        self.send_response({'info': 'Users data received', 'users': usersData})
 
+#deletes a user
+#https://db-server-blishten.c9users.io:8081/marxan-server/deleteUser?user=asd2
+class deleteUser(MarxanRESTHandler):
+    def get(self):
+        #validate the input arguments
+        _validateArguments(self.request.arguments, ['user']) 
+        shutil.rmtree(self.folder_user)
+        #set the response
+        self.send_response({'info': 'User deleted'})
+    
 #gets project information from the input.dat file
 #https://db-server-blishten.c9users.io:8081/marxan-server/getProject?user=andrew&project=Tonga%20marine%2030km2&callback=__jp2
 class getProject(MarxanRESTHandler):
@@ -1825,8 +1870,10 @@ def make_app():
         ("/marxan-server/createFeaturePreprocessingFileFromImport", createFeaturePreprocessingFileFromImport),
         ("/marxan-server/createUser", createUser),
         ("/marxan-server/validateUser", validateUser),
+        ("/marxan-server/resendPassword", resendPassword),
         ("/marxan-server/getUser", getUser),
         ("/marxan-server/getUsers", getUsers),
+        ("/marxan-server/deleteUser", deleteUser),
         ("/marxan-server/updateUserParameters", updateUserParameters),
         ("/marxan-server/getFeature", getFeature),
         ("/marxan-server/importFeature", importFeature),
