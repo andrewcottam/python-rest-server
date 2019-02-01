@@ -35,11 +35,11 @@ import signal
 ## constant declarations
 ####################################################################################################################################################################################################################################################################
 ##SECURITY SETTINGS
-DISABLE_SECURITY = False                                                        # Set to True to turn off all security, i.e. authentication and authorisation
-COOKIE_RANDOM_VALUE = "__TODO:_GENERATE_YOUR_OWN_RANDOM_VALUE_HERE__"           # This must be set to a random value as it is used to encrypt and sign cookies - if it is not changed then malicious hackers can use this default value to produce their own signed cookies compromising security
-PERMITTED_DOMAINS = ["https://marxan-client-blishten.c9users.io:8081/"]         # Add domains that you want to allow to access your services and data - this only applies to cross-domain requests and is not relevant if the client and server software are on the same machine
-PERMITTED_METHODS = ["createUser","validateUser","resendPassword"]              # REST services that have no authentication/authorisation 
-ROLE_UNAUTHORISED_METHODS = {                                                   # Add REST services that you want to lock down to specific roles - a class added to an array will make that method unavailable for that role
+DISABLE_SECURITY = False                                                            # Set to True to turn off all security, i.e. authentication and authorisation
+COOKIE_RANDOM_VALUE = "__TODO:_GENERATE_YOUR_OWN_RANDOM_VALUE_HERE__"               # This must be set to a random value as it is used to encrypt and sign cookies - if it is not changed then malicious hackers can use this default value to produce their own signed cookies compromising security
+PERMITTED_DOMAINS = ["https://beta.biopama.org:8081/","https://marxan-client-blishten.c9users.io:8081/"]             # Add domains that you want to allow to access your services and data - this only applies to cross-domain requests and is not relevant if the client and server software are on the same machine
+PERMITTED_METHODS = ["getServerData","createUser","validateUser","resendPassword","testTornado"]    # REST services that have no authentication/authorisation/CORS control
+ROLE_UNAUTHORISED_METHODS = {                                                       # Add REST services that you want to lock down to specific roles - a class added to an array will make that method unavailable for that role
     "ReadOnly": ["createProject","createImportProject","upgradeProject","deleteProject","cloneProject","createProjectGroup","deleteProjects","renameProject","updateProjectParameters","getCountries","getPlanningUnitGrids","createPlanningUnitGrid","deletePlanningUnitGrid","uploadTilesetToMapBox","uploadShapefile","uploadFile","importPlanningUnitGrid","createFeaturePreprocessingFileFromImport","createUser","getUsers","updateUserParameters","getFeature","importFeature","getPlanningUnitsData","updatePUFile","getSpeciesData","getSpeciesPreProcessingData","updateSpecFile","getProtectedAreaIntersectionsData","getMarxanLog","getBestSolution","getOutputSummary","getSummedSolution","getMissingValues","preprocessFeature","preprocessPlanningUnits","preprocessProtectedAreas","runMarxan","stopMarxan","testRoleAuthorisation",'deleteFeature','deleteUser'],
     "User": ['testRoleAuthorisation','deleteProject','deleteFeature','getUsers','deleteUser'],
     "Admin": []
@@ -58,6 +58,7 @@ CLUMP_FOLDER = MARXAN_FOLDER + "_clumping/"
 OGR2OGR_EXECUTABLE = "/home/ubuntu/miniconda2/bin/ogr2ogr"
 MAPBOX_USER = "blishten"
 MAPBOX_ACCESS_TOKEN = "sk.eyJ1IjoiYmxpc2h0ZW4iLCJhIjoiY2piNm1tOGwxMG9lajMzcXBlZDR4aWVjdiJ9.Z1Jq4UAgGpXukvnUReLO1g"
+SERVER_CONFIG_FILENAME = "server.dat"
 USER_DATA_FILENAME = "user.dat"
 PROJECT_DATA_FILENAME = "input.dat"
 OUTPUT_LOG_FILENAME = "output_log.dat"
@@ -146,7 +147,7 @@ def _getProjectsForUser(user):
             tmpObj.folder_project = MARXAN_FOLDER + user + os.sep + project + os.sep
             _getProjectData(tmpObj)
             #create a dict to save the data
-            projects.append({'user': user, 'name': project,'description': tmpObj.projectData["metadata"]["DESCRIPTION"],'createdate': tmpObj.projectData["metadata"]["CREATEDATE"],'oldVersion': tmpObj.projectData["metadata"]["OLDVERSION"]})
+            projects.append({'user': user, 'name': project,'description': tmpObj.projectData["metadata"]["DESCRIPTION"],'createdate': tmpObj.projectData["metadata"]["CREATEDATE"],'oldVersion': tmpObj.projectData["metadata"]["OLDVERSION"],'private': tmpObj.projectData["metadata"]["PRIVATE"]})
     return projects
 
 #gets all projects for all users
@@ -231,7 +232,7 @@ def _getProjectData(obj):
         elif k in ['BLM', 'PROP', 'RANDSEED', 'NUMREPS', 'NUMITNS', 'STARTTEMP', 'NUMTEMP', 'COSTTHRESH', 'THRESHPEN1', 'THRESHPEN2', 'SAVERUN', 'SAVEBEST', 'SAVESUMMARY', 'SAVESCEN', 'SAVETARGMET', 'SAVESUMSOLN', 'SAVEPENALTY', 'SAVELOG', 'RUNMODE', 'MISSLEVEL', 'ITIMPTYPE', 'HEURTYPE', 'CLUMPTYPE', 'VERBOSITY', 'SAVESOLUTIONSMATRIX']:
             key, value = _getKeyValue(s, k) #run parameters 
             paramsArray.append({'key': key, 'value': value})
-        elif k in ['DESCRIPTION','CREATEDATE','PLANNING_UNIT_NAME','OLDVERSION','IUCN_CATEGORY']: # metadata section of the input.dat file
+        elif k in ['DESCRIPTION','CREATEDATE','PLANNING_UNIT_NAME','OLDVERSION','IUCN_CATEGORY','PRIVATE']: # metadata section of the input.dat file
             key, value = _getKeyValue(s, k)
             metadataDict.update({key: value})
             if k=='PLANNING_UNIT_NAME':
@@ -259,18 +260,17 @@ def _getProjectInputFilename(obj, fileToGet):
 def _getProjectInputData(obj, fileToGet, errorIfNotExists = False):
     filename = obj.folder_input + os.sep + _getProjectInputFilename(obj, fileToGet)
     return _loadCSV(filename, errorIfNotExists)
-    
-#get the data on the user from the user.dat file 
-def _getUserData(obj):
-    userDataFilename = obj.folder_user + USER_DATA_FILENAME
-    if not os.path.exists(userDataFilename):
-        raise MarxanServicesError("The user.dat file '" + userDataFilename +"' does not exist") 
+
+#gets the key/value pairs from a text file as a dictionary
+def _getKeyValuesFromFile(filename):
+    if not os.path.exists(filename):
+        raise MarxanServicesError("The file '" + filename +"' does not exist") 
     #get the file contents
-    s = _readFile(userDataFilename)
+    s = _readFile(filename)
     #get the keys from the file
     keys = _getKeys(s)
-    #iterate through the keys, get their values add add them to this request object in the userData object
-    obj.userData = {}
+    #iterate through the keys, get their values and add them to a dictionary
+    data = {}
     for k in keys:
         key, value = _getKeyValue(s, k)
         #update the  dict
@@ -278,7 +278,20 @@ def _getUserData(obj):
             value = True
         if value == "false":
             value = False
-        obj.userData[key] = value
+        data[key] = value
+    return data
+
+#gets the server data
+def _getServerData(obj):
+    data = _getKeyValuesFromFile(MARXAN_WEB_RESOURCES_FOLDER + SERVER_CONFIG_FILENAME)
+    #set the serverData attribute on this object
+    obj.serverData = data
+
+#get the data on the user from the user.dat file 
+def _getUserData(obj):
+    data = _getKeyValuesFromFile(obj.folder_user + USER_DATA_FILENAME)
+    #set the userData attribute on this object
+    obj.userData = data
 
 #get the species data from the spec.dat file as a DataFrame (and joins it to the data from the PostGIS database if it is the Marxan web version)
 def _getSpeciesData(obj):
@@ -316,7 +329,7 @@ def _getFeature(obj, oid):
 
 #get all species information from the PostGIS database
 def _getAllSpeciesData(obj):
-    obj.allSpeciesData = PostGIS().getDataFrame("select oid::integer id,feature_class_name , alias , description , _area area, extent, creation_date::text, tilesetid from marxan.metadata_interest_features order by alias;")
+    obj.allSpeciesData = PostGIS().getDataFrame("select oid::integer id,feature_class_name , alias , description , _area area, extent, to_char(creation_date, 'Dy, DD Mon YYYY HH24:MI:SS')::text as creation_date, tilesetid from marxan.metadata_interest_features order by alias;")
 
 #get the information about which species have already been preprocessed
 def _getSpeciesPreProcessingData(obj):
@@ -634,15 +647,6 @@ def _unzipFile(filename):
     zip_ref.close()
     return rootfilename
 
-#uploads a tileset to mapbox using the filename of the file (filename) to upload and the name of the resulting tileset (_name)
-def _uploadTileset(filename, _name):
-    #create an instance of the upload service
-    service = Uploader(access_token=MAPBOX_ACCESS_TOKEN)    
-    with open(filename, 'rb') as src:
-        upload_resp = service.upload(src, _name)
-        upload_id = upload_resp.json()['id']
-        return upload_id
-        
 def _uploadTilesetToMapbox(feature_class_name, mapbox_layer_name):
     #create the file to upload to MapBox - now using shapefiles as kml files only import the name and description properties into a mapbox tileset
     cmd = OGR2OGR_EXECUTABLE + ' -f "ESRI Shapefile" ' + MARXAN_FOLDER + feature_class_name + '.shp' + ' "PG:host=localhost dbname=biopama user=jrc password=thargal88" -sql "select * from Marxan.' + feature_class_name + '" -nln ' + mapbox_layer_name + ' -s_srs EPSG:3410 -t_srs EPSG:3857'
@@ -660,6 +664,15 @@ def _uploadTilesetToMapbox(feature_class_name, mapbox_layer_name):
     _deleteZippedShapefile(MARXAN_FOLDER, feature_class_name + ".zip", feature_class_name)
     return uploadId
     
+#uploads a tileset to mapbox using the filename of the file (filename) to upload and the name of the resulting tileset (_name)
+def _uploadTileset(filename, _name):
+    #create an instance of the upload service
+    service = Uploader(access_token=MAPBOX_ACCESS_TOKEN)    
+    with open(filename, 'rb') as src:
+        upload_resp = service.upload(src, _name)
+        upload_id = upload_resp.json()['id']
+        return upload_id
+        
 #deletes a feature
 def _deleteFeature(feature_class_name):
     #delete the feature class
@@ -736,8 +749,13 @@ def _requestIsWebSocket(request):
 
 #to prevent CORS errors in the client
 def _checkCORS(obj):
-    if DISABLE_SECURITY:
-        return 
+    #get the method requested
+    method = _getRESTMethod(obj.request.path)
+    #no CORS policy if security is disabled or if the server is running on localhost or if the request is for a permitted method
+    # or if the user is 'guest' (if this is enabled) - dont set any headers - this will only work for GET requests - cross-domwin POST requests must have the headers
+    if (DISABLE_SECURITY or obj.request.host[:9] == "localhost" or (method in PERMITTED_METHODS) or (obj.current_user == GUEST_USERNAME)):
+        if obj.request.method == "GET":
+            return 
     #get the referer
     if "Referer" in obj.request.headers.keys():
         referer = obj.request.headers.get("Referer")
@@ -784,6 +802,12 @@ def _authoriseUser(obj):
             role = obj.get_secure_cookie("role")
             if role != "Admin":
                 raise HTTPError(403, "The user '" + obj.current_user + "' has no permission to access a project of another user")    
+    
+#returns a boolean indicating whether the guest user is enabled on this server
+def _guestUserEnabled(obj):
+    _getServerData(obj)
+    #get the current state
+    return obj.serverData['ENABLE_GUEST_USER']
     
 ####################################################################################################################################################################################################################################################################
 ## generic classes
@@ -955,6 +979,20 @@ class MarxanRESTHandler(tornado.web.RequestHandler):
 ## RequestHandler subclasses
 ####################################################################################################################################################################################################################################################################
 
+#toggles whether the guest user is enabled or not on this server
+class toggleEnableGuestUser(MarxanRESTHandler):
+    def get(self):
+        _getServerData(self)
+        #get the current state
+        enabled = self.serverData['ENABLE_GUEST_USER']
+        if enabled:
+            enabledString = "False"
+        else:
+            enabledString = "True"
+        _updateParameters(MARXAN_WEB_RESOURCES_FOLDER + SERVER_CONFIG_FILENAME, {"ENABLE_GUEST_USER": enabledString})
+        #set the response
+        self.send_response({'enabled': not enabled})
+        
 #creates a new user
 #POST ONLY
 class createUser(MarxanRESTHandler):
@@ -1139,7 +1177,7 @@ class validateUser(MarxanRESTHandler):
         #validate the input arguments
         _validateArguments(self.request.arguments, ['user','password'])  
         #see if the guest user is enabled
-        if ((not GUEST_USER_ENABLED) and (self.get_argument("user") == GUEST_USERNAME)):
+        if ((not _guestUserEnabled(self)) and (self.get_argument("user") == GUEST_USERNAME)):
             raise MarxanServicesError("The guest user is not enabled on this server")        
         try:
             #get the user data from the user.dat file
@@ -1230,8 +1268,9 @@ class getProject(MarxanRESTHandler):
             _getPlanningUnitsData(self)
             #get the protected area intersections
             _getProtectedAreaIntersectionsData(self)
-            #set the project as the users last project so it will load on login
-            _updateParameters(self.folder_user + USER_DATA_FILENAME, {'LASTPROJECT': self.get_argument("project")})
+            #set the project as the users last project so it will load on login - but only if the current user is loading one of their own projects
+            if (self.current_user == self.get_argument("user")):
+                _updateParameters(self.folder_user + USER_DATA_FILENAME, {'LASTPROJECT': self.get_argument("project")})
             #set the response
             self.send_response({'user': self.get_argument("user"), 'project': self.projectData["project"], 'metadata': self.projectData["metadata"], 'files': self.projectData["files"], 'runParameters': self.projectData["runParameters"], 'renderer': self.projectData["renderer"], 'features': self.speciesData.to_dict(orient="records"), 'feature_preprocessing': self.speciesPreProcessingData.to_dict(orient="split")["data"], 'planning_units': self.planningUnitsData, 'protected_area_intersections': self.protectedAreaIntersectionsData})
 
@@ -1277,7 +1316,7 @@ class getAllSpeciesData(MarxanRESTHandler):
         #get all the species data
         _getAllSpeciesData(self)
         #set the response
-        self.send_response({"data": self.allSpeciesData.to_dict(orient="records")})
+        self.send_response({"info": "All species data received", "data": self.allSpeciesData.to_dict(orient="records")})
 
 #gets the species preprocessing information from the feature_preprocessing.dat file
 #https://db-server-blishten.c9users.io:8081/marxan-server/getSpeciesPreProcessingData?user=andrew&project=Tonga%20marine%2030km2&callback=__jp2
@@ -1396,6 +1435,14 @@ class getResults(MarxanRESTHandler):
         _getSummedSolution(self)
         #set the response
         self.send_response({'info':'Results loaded', 'log': self.marxanLog, 'mvbest': self.bestSolution.to_dict(orient="split")["data"], 'summary':self.outputSummary.to_dict(orient="split")["data"], 'ssoln': self.summedSolution})
+
+#gets the data from the server.dat file as an abject
+class getServerData(MarxanRESTHandler):
+    def get(self):
+        #get the data from the server.dat file
+        _getServerData(self)
+        #set the response
+        self.send_response({'info':'Server data loaded', 'serverData': self.serverData})
 
 #gets a list of projects for the user
 #https://db-server-blishten.c9users.io:8081/marxan-server/getProjects?user=andrew&callback=__jp2
@@ -1552,6 +1599,11 @@ class testRoleAuthorisation(MarxanRESTHandler):
     def get(self):
         self.send_response({'info': "Service successful"})
 
+#tests tornado is working properly		
+class testTornado(MarxanRESTHandler):
+	def get(self):
+		self.send_response({'info': "Tornado running"})
+		
 ####################################################################################################################################################################################################################################################################
 ## baseclass for handling WebSockets
 ####################################################################################################################################################################################################################################################################
@@ -1848,6 +1900,7 @@ class preprocessPlanningUnits(QueryWebSocketHandler):
 
 def make_app():
     return tornado.web.Application([
+        ("/marxan-server/getServerData", getServerData),
         ("/marxan-server/getProjects", getProjects),
         ("/marxan-server/getProject", getProject),
         ("/marxan-server/createProject", createProject),
@@ -1868,6 +1921,7 @@ def make_app():
         ("/marxan-server/uploadFile", uploadFile),
         ("/marxan-server/importPlanningUnitGrid", importPlanningUnitGrid),
         ("/marxan-server/createFeaturePreprocessingFileFromImport", createFeaturePreprocessingFileFromImport),
+        ("/marxan-server/toggleEnableGuestUser", toggleEnableGuestUser),
         ("/marxan-server/createUser", createUser),
         ("/marxan-server/validateUser", validateUser),
         ("/marxan-server/resendPassword", resendPassword),
@@ -1898,7 +1952,8 @@ def make_app():
         ("/marxan-server/preprocessProtectedAreas", preprocessProtectedAreas),
         ("/marxan-server/runMarxan", runMarxan),
         ("/marxan-server/stopMarxan", stopMarxan),
-        ("/marxan-server/testRoleAuthorisation", testRoleAuthorisation)
+        ("/marxan-server/testRoleAuthorisation", testRoleAuthorisation),
+        ("/marxan-server/testTornado", testTornado)
     ], cookie_secret=COOKIE_RANDOM_VALUE)
 
 if __name__ == "__main__":
