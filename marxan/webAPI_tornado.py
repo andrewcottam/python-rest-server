@@ -5,6 +5,7 @@ from tornado.web import HTTPError
 from tornado.ioloop import IOLoop
 from tornado import concurrent
 from tornado import gen
+from urlparse import urlparse
 from psycopg2 import sql
 from mapbox import Uploader
 from mapbox import errors
@@ -37,7 +38,7 @@ import signal
 ##SECURITY SETTINGS
 DISABLE_SECURITY = False                                                            # Set to True to turn off all security, i.e. authentication and authorisation
 COOKIE_RANDOM_VALUE = "__TODO:_GENERATE_YOUR_OWN_RANDOM_VALUE_HERE__"               # This must be set to a random value as it is used to encrypt and sign cookies - if it is not changed then malicious hackers can use this default value to produce their own signed cookies compromising security
-PERMITTED_DOMAINS = ["https://beta.biopama.org:8081/","https://marxan-client-blishten.c9users.io:8081/"]             # Add domains that you want to allow to access your services and data - this only applies to cross-domain requests and is not relevant if the client and server software are on the same machine
+PERMITTED_DOMAINS = ["https://andrewcottam.github.io","https://beta.biopama.org","https://marxan-client-blishten.c9users.io:8081"]             # Add domains that you want to allow to access your services and data - this only applies to cross-domain requests and is not relevant if the client and server software are on the same machine
 PERMITTED_METHODS = ["getServerData","createUser","validateUser","resendPassword","testTornado"]    # REST services that have no authentication/authorisation/CORS control
 ROLE_UNAUTHORISED_METHODS = {                                                       # Add REST services that you want to lock down to specific roles - a class added to an array will make that method unavailable for that role
     "ReadOnly": ["createProject","createImportProject","upgradeProject","deleteProject","cloneProject","createProjectGroup","deleteProjects","renameProject","updateProjectParameters","getCountries","getPlanningUnitGrids","createPlanningUnitGrid","deletePlanningUnitGrid","uploadTilesetToMapBox","uploadShapefile","uploadFile","importPlanningUnitGrid","createFeaturePreprocessingFileFromImport","createUser","getUsers","updateUserParameters","getFeature","importFeature","getPlanningUnitsData","updatePUFile","getSpeciesData","getSpeciesPreProcessingData","updateSpecFile","getProtectedAreaIntersectionsData","getMarxanLog","getBestSolution","getOutputSummary","getSummedSolution","getMissingValues","preprocessFeature","preprocessPlanningUnits","preprocessProtectedAreas","runMarxan","stopMarxan","testRoleAuthorisation",'deleteFeature','deleteUser'],
@@ -758,15 +759,15 @@ def _checkCORS(obj):
             return 
     #get the referer
     if "Referer" in obj.request.headers.keys():
-        referer = obj.request.headers.get("Referer")
-        #for GET requests the 'Referer' header will be used - this will include a trailing forward slash
-        #for POST requests the 'Origin' header will be used - this has no url parameters and no trailing forward slash
-        origin = referer if obj.request.method == "GET" else referer[:-1]
-        if referer in PERMITTED_DOMAINS:
+        referer = urlparse(obj.request.headers.get("Referer"))
+        origin = referer.scheme + "://" + referer.netloc
+        #check the origin is permitter
+        if origin in PERMITTED_DOMAINS:
+            #if so, write the headers
             obj.set_header("Access-Control-Allow-Origin", origin)
             obj.set_header("Access-Control-Allow-Credentials", "true")
         else:
-            raise HTTPError(403, "The origin '" + referer + "' does not have permission to access the service (CORS error)") #, reason = "The origin '" + referer + "' does not have permission to access the service (CORS error)"
+            raise HTTPError(403, "The origin '" + origin + "' does not have permission to access the service (CORS error)") #, reason = "The origin '" + referer + "' does not have permission to access the service (CORS error)"
     else:
         raise HTTPError(403, NO_REFERER_ERROR)
 
@@ -1618,7 +1619,7 @@ class MarxanWebSocketHandler(tornado.websocket.WebSocketHandler):
         if DISABLE_SECURITY:
             return True
         #check the origin is in the permitted origins - the Origin header will not end in a forward slash
-        if origin + "/" in PERMITTED_DOMAINS:
+        if origin in PERMITTED_DOMAINS:
             return True
         else:
             raise HTTPError(403, "The origin '" + origin + "' does not have permission to access the service (CORS error)")
