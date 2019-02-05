@@ -38,7 +38,6 @@ import signal
 ##SECURITY SETTINGS
 DISABLE_SECURITY = False                                                            # Set to True to turn off all security, i.e. authentication and authorisation
 COOKIE_RANDOM_VALUE = "__TODO:_GENERATE_YOUR_OWN_RANDOM_VALUE_HERE__"               # This must be set to a random value as it is used to encrypt and sign cookies - if it is not changed then malicious hackers can use this default value to produce their own signed cookies compromising security
-PERMITTED_DOMAINS = ["https://andrewcottam.github.io","https://beta.biopama.org","https://marxan-client-blishten.c9users.io:8081"]             # Add domains that you want to allow to access your services and data - this only applies to cross-domain requests and is not relevant if the client and server software are on the same machine
 PERMITTED_METHODS = ["getServerData","createUser","validateUser","resendPassword","testTornado"]    # REST services that have no authentication/authorisation/CORS control
 ROLE_UNAUTHORISED_METHODS = {                                                       # Add REST services that you want to lock down to specific roles - a class added to an array will make that method unavailable for that role
     "ReadOnly": ["createProject","createImportProject","upgradeProject","deleteProject","cloneProject","createProjectGroup","deleteProjects","renameProject","updateProjectParameters","getCountries","getPlanningUnitGrids","createPlanningUnitGrid","deletePlanningUnitGrid","uploadTilesetToMapBox","uploadShapefile","uploadFile","importPlanningUnitGrid","createFeaturePreprocessingFileFromImport","createUser","getUsers","updateUserParameters","getFeature","importFeature","getPlanningUnitsData","updatePUFile","getSpeciesData","getSpeciesPreProcessingData","updateSpecFile","getProtectedAreaIntersectionsData","getMarxanLog","getBestSolution","getOutputSummary","getSummedSolution","getMissingValues","preprocessFeature","preprocessPlanningUnits","preprocessProtectedAreas","runMarxan","stopMarxan","testRoleAuthorisation",'deleteFeature','deleteUser'],
@@ -1149,13 +1148,13 @@ class getPlanningUnitGrids(MarxanRESTHandler):
         content = PostGIS().getDict("SELECT feature_class_name ,alias ,description ,creation_date::text ,country_id ,aoi_id,domain,_area,ST_AsText(envelope) envelope FROM marxan.metadata_planning_units order by 1;")
         self.send_response({'info': 'Planning unit grids retrieved', 'planning_unit_grids': content})        
         
-#https://db-server-blishten.c9users.io:8081/marxan-server/createPlanningUnitGrid?iso3=AND&domain=Terrestrial&areakm2=50&callback=__jp10        
+#https://db-server-blishten.c9users.io:8081/marxan-server/createPlanningUnitGrid?iso3=AND&domain=Terrestrial&areakm2=50&shape=hexagon&callback=__jp10        
 class createPlanningUnitGrid(MarxanRESTHandler):
     def get(self):
         #validate the input arguments
-        _validateArguments(self.request.arguments, ['iso3','domain','areakm2'])    
+        _validateArguments(self.request.arguments, ['iso3','domain','areakm2','shape'])    
         #create the new planning unit and get the first row back
-        data = PostGIS().execute("SELECT * FROM marxan.hexagons(%s,%s,%s);", [self.get_argument('areakm2'), self.get_argument('iso3'), self.get_argument('domain')], "One")
+        data = PostGIS().execute("SELECT * FROM marxan.planning_grid(%s,%s,%s,%s);", [self.get_argument('areakm2'), self.get_argument('iso3'), self.get_argument('domain'), self.get_argument('shape')], "One")
         #set the response
         self.send_response({'info':'Planning unit grid created', 'planning_unit_grid': data[0]})
 
@@ -1807,7 +1806,7 @@ class preprocessFeature(QueryWebSocketHandler):
         #append the intersection data to the existing data
         df = df.append(intersectionData)
         #sort the values by the species column then pu column
-        df = df.sort_values(by=['species','pu'])
+        df = df.sort_values(by=['pu'])
         try: 
             #write the data to the PUVSPR.dat file
             _writeCSV(self, "PUVSPRNAME", df)
@@ -1974,6 +1973,8 @@ if __name__ == "__main__":
             raise MarxanServicesError("The path to the ogr2ogr executable '" + OGR2OGR_EXECUTABLE + "' could not be found")
         if not os.path.exists(MARXAN_EXECUTABLE):
             raise MarxanServicesError("The path to the Marxan executable '" + MARXAN_EXECUTABLE + "' could not be found")
+        # Add domains that you want to allow to access your services and data - this only applies to cross-domain requests and is not relevant if the client and server software are on the same machine - these are set in the server.dat file CORS_DOMAINS variable
+        PERMITTED_DOMAINS = _getKeyValuesFromFile(MARXAN_WEB_RESOURCES_FOLDER + SERVER_CONFIG_FILENAME)["CORS_DOMAINS"].split(",")
         app = make_app()
         app.listen(8081, '0.0.0.0')
         tornado.ioloop.IOLoop.current().start()
