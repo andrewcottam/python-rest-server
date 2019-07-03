@@ -5,8 +5,8 @@
 			<table class="table" cellspacing="0"><tr><th style="width: 15%">Database</th><th>Description</th></tr>
 			{% for database in items %}
 				<tr><td><a href="{{database}}/">{{database}}</a></td><td>{{items[database]['description']}}</td></tr>
-			</table>
 			{% end %}
+			</table>
 		{% else %}
 		    <p>No content</p>
 		{% end %}

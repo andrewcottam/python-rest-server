@@ -1,18 +1,18 @@
-#!/usr/bin/env python 
+#!/home/ubuntu//miniconda2/envs/python36/bin/python3.6
 # provides a GUI to the REST Services available at JRC that shows you the services based on the schemas that are within 
-import tornado, sys, re, datetime, urllib, select, psycopg2, ast, serviceRequest, logging, os, colorama,platform,traceback, json, pdfkit
+import tornado, sys, re, datetime, urllib.request, urllib.parse, urllib.error, select, psycopg2, ast, logging, os, colorama, platform, traceback, json, pdfkit
 import tornado.options 
 import ui_methods
 from lxml import etree
 from tornado.log import LogFormatter
 from collections import OrderedDict
-from urlparse import parse_qs
+from urllib.parse import parse_qs
 from psycopg2 import ProgrammingError, OperationalError
 from resources import dbconnect, databases, documentRoot, title
 from tornado.web import StaticFileHandler 
 from resources import dbconnect, twilio, amazon_ses
-from twilio.rest import TwilioRestClient
-from amazon_ses import AmazonSES, EmailMessage, AmazonError
+# from twilio.rest import TwilioRestClient
+# from amazon_ses import AmazonSES, EmailMessage, AmazonError
 
 #=====================  CONSTANTS  ==================================================================================================================================================================================================================
 
@@ -107,23 +107,23 @@ def _setGlobalVariables():
     CERTFILE = "None"
     KEYFILE = "None"
     #OUTPUT THE INFORMATION ABOUT THE MARXAN-SERVER SOFTWARE
-    print "\x1b[1;32;48m\nStarting python-rest-server v" + PYTHON_REST_SERVER_VERSION + " listening on port " + PORT + " ..\x1b[0m"
+    print("\x1b[1;32;48m\nStarting python-rest-server v" + PYTHON_REST_SERVER_VERSION + " listening on port " + PORT + " ..\x1b[0m")
     #print out which operating system is being used
-    print " Operating system:\t" + platform.system() 
-    print " Tornado version:\t" + tornado.version
+    print(" Operating system:\t" + platform.system()) 
+    print(" Tornado version:\t" + tornado.version)
     #output the ssl information if it is being used
     if CERTFILE != "None":
-        print " SSL certificate file:\t" + CERTFILE
+        print(" SSL certificate file:\t" + CERTFILE)
         testUrl = "https://"
     else:
-        print " SSL certificate file:\tNone"
+        print(" SSL certificate file:\tNone")
         testUrl = "http://"
     testUrl = testUrl + "<host>:" + PORT + "/python-rest-server/testTornado"
     if KEYFILE != "None":
-        print " Private key file:\t" + KEYFILE
-    print " Python executable:\t" + sys.executable
-    print "\x1b[1;32;48mStarted at " + datetime.datetime.now().strftime("%d/%m/%y %H:%M:%S") + "\x1b[0m"
-    print "\x1b[1;32;48m\nTo test python-rest-server goto " + testUrl + "\x1b[0m"
+        print(" Private key file:\t" + KEYFILE)
+    print(" Python executable:\t" + sys.executable)
+    print("\x1b[1;32;48mStarted at " + datetime.datetime.now().strftime("%d/%m/%y %H:%M:%S") + "\x1b[0m")
+    print("\x1b[1;32;48m\nTo test python-rest-server goto " + testUrl + "\x1b[0m")
         
 class PythonRESTHandler(tornado.web.RequestHandler):
     #used by all descendent classes to write the return payload and send it
@@ -135,11 +135,11 @@ class PythonRESTHandler(tornado.web.RequestHandler):
             content = json.dumps(response)
         #sometimes the Marxan log causes json encoding issues
         except (UnicodeDecodeError) as e: 
-            if 'log' in response.keys():
+            if 'log' in list(response.keys()):
                 response.update({"log": "Server warning: Unable to encode the Marxan log. <br/>" + repr(e), "warning": "Unable to encode the Marxan log"})
                 content = json.dumps(response)        
         finally:
-            if "callback" in self.request.arguments.keys():
+            if "callback" in list(self.request.arguments.keys()):
                 self.write(self.get_argument("callback") + "(" + content + ")")
             else:
                 self.write(content)
@@ -250,7 +250,7 @@ class getservice(PythonRESTHandler):
 class callservice(PythonRESTHandler):
     def getJsonResponse(self, json):
         self.set_header('Content-Type','application/json')
-        if "callback" in self.request.arguments.keys():
+        if "callback" in list(self.request.arguments.keys()):
             self.write(self.get_argument("callback") + "(" + json + ")")         
         else:
             self.write(json)
@@ -260,7 +260,7 @@ class callservice(PythonRESTHandler):
             conn = dbconnect(database)
             t1 = datetime.datetime.now()
             # get the input parameters
-            params = OrderedDict([(q.split("=")[0], urllib.unquote(q.split("=")[1])) for q in self.request.query.split("&")])
+            params = OrderedDict([(q.split("=")[0], urllib.parse.unquote(q.split("=")[1])) for q in self.request.query.split("&")])
             # get the standard optional parameters from the url 
             format = params.setdefault('format', 'json') 
             fields = params.setdefault('fields', '').split(",")  # fields will be passed as an array, e.g. iucn_species_id,wdpa_id
@@ -273,7 +273,7 @@ class callservice(PythonRESTHandler):
             
             # remove the standard optional parameters from the dictionary so we are left with just the parameters required for the function
             del (params['format'], params['fields'], params['includemetadata'], params['parseparams'], params['metadataname'], params['rootname'], params['sortfield'], params['dplimit'])
-            if 'callback' in params.keys():
+            if 'callback' in list(params.keys()):
                 del(params['callback'])
             # check if the service name is valid
             if not (isValidServiceName(service)):
@@ -290,7 +290,7 @@ class callservice(PythonRESTHandler):
                 # get the names of the function parameters which are array types
                 arrayparamnames = [p.strip().split(" ")[0] for p in functionparams if '[' in p]
                 # convert the array values into lists
-                for key in params.keys():
+                for key in list(params.keys()):
                     if key in arrayparamnames:
                         strlist = params[key].split(",")
                         isnum = isNumeric(strlist[0])
@@ -301,11 +301,11 @@ class callservice(PythonRESTHandler):
                 # get the full list of function parameter names
                 functionparamnames = [p.strip().split(" ")[0] for p in functionparams]
                 # check that all parameters are correct
-                invalidparamnames = [n for n in params.keys() if n not in functionparamnames]
+                invalidparamnames = [n for n in list(params.keys()) if n not in functionparamnames]
                 if invalidparamnames and parseparams == 'true':
                     raise RESTServicesError('Invalid parameters: ' + ",".join(invalidparamnames))
                 # put the input parameters in the right order 
-                params = OrderedDict([(n, params[n]) for n in functionparamnames if n in params.keys()])
+                params = OrderedDict([(n, params[n]) for n in functionparamnames if n in list(params.keys())])
             
             # GET THE SORT CLAUSE
             if sortField != "":
@@ -375,7 +375,7 @@ class callservice(PythonRESTHandler):
                 else:
                     for recordelement in recordsdicts:
                         record = etree.Element('record')
-                        for (n, v) in recordelement.items():
+                        for (n, v) in list(recordelement.items()):
                             el = etree.Element(n)
                             el.text = v
                             record.append(el)
