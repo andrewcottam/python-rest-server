@@ -367,7 +367,7 @@ class callservice(PythonRESTHandler):
             elif format in ['xml', 'xmlverbose']:
                 root = etree.Element('results')
                 recordsnode = etree.Element(rootName)
-                recordsdicts = [OrderedDict([(allfields[col], str(row[col]).decode('utf-8')) for col in range(fieldcount) if (col in colsRequired) and str(row[col]) != 'None']) for row in rows ]  #
+                recordsdicts = [OrderedDict([(allfields[col], str(row[col])) for col in range(fieldcount) if (col in colsRequired) and str(row[col]) != 'None']) for row in rows ]  #
                 if format == 'xml':
                     recordselements = [etree.Element('record', element) for element in recordsdicts]
                     for recordelement in recordselements:
