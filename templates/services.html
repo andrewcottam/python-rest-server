@@ -1,0 +1,14 @@
+{% extends "base.html" %} 
+{% block breadcrumb %}<div class="breadcrumb"><a href="../../">Databases&nbsp;&nbsp;</a> | &nbsp;&nbsp;<a href="../">{{database}}&nbsp;&nbsp;</a> | &nbsp;&nbsp;{{schemaname}}</div>{% end %}
+{% block maintable %}
+	{% if services %}
+		<table class="table" cellspacing="0">
+			<tr><th style="width: 15%">Service</th><th>Description</th></tr>
+			{% for service in services %}
+				<tr><td><a href="{{service['name']}}/">{{service['name']}}</a></td><td>{{service['description']}}</td></tr>
+			{% end %}
+		</table>
+	{% end %}
+{% end %}
+
+

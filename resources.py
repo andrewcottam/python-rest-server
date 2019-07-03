@@ -3,7 +3,7 @@ import sys
 import psycopg2, psycopg2.extras
 
 databases = {
-    "default": dict(connectionString="dbname='<dbname>' host='<name.domain.org>' user='<dbuser>' password='<password>'", description="<Description that will appear in the services directory>")
+    "pythonrestserver": dict(connectionString="dbname='pythonrestserver' host='localhost' user='jrc' password='thargal88'", description="Python REST Server Database")
 }
 
 #set the documentRoot to the relative path to the python-rest-server/htmldocs folder from the Apache html folder (if it is not set in an Apache vhost.conf file)

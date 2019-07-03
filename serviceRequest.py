@@ -1,5 +1,5 @@
 # file that handles requests for data from a postgresql database and returns the data in a number of different formats
-import psycopg2, exceptions, datetime, logging, urllib, json, web, pdfkit, sys
+import psycopg2, exceptions, datetime, logging, urllib, json, pdfkit, sys
 from psycopg2 import ProgrammingError, DataError, IntegrityError, extensions, OperationalError
 from amazon_ses import AmazonSES, EmailMessage, AmazonError
 from resources import dbconnect, twilio, amazon_ses

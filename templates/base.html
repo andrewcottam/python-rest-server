@@ -1,0 +1,26 @@
+<html>
+<head>
+    <title>JRC REST Services Directory</title>
+    <link rel="stylesheet" type="text/css" href="{{relativepath}}styles/styles.css" />
+</head>
+<body>
+    <div class="title">
+        <span style="vertical-align: super">JRC REST Services</span>
+        <span style="vertical-align: super;padding-left:40%"><a href='{{relativepath}}help.html' target='_help' style='color: white'>Help</a></span>
+    </div>
+    
+    {% block breadcrumb %}breadcrumb{% end %}
+    {% block maintable %}maintable{% end %}
+    
+    <hr/>
+    <div style="padding-left:10px">
+        <div>
+            <a href="http://ec.europa.eu/index_en.htm" target="_new" title="European Commision Homepage"><img src="{{relativepath}}images/jrc.jpg"/></a>
+        </div>
+        <div class="normal" style="padding-top: 10px">
+            Web services cannot be used for commercial purposes and should acknowledge the source. JRC would like to be informed should the web services be used regularly. For full terms and conditions see <a href='terms' target='_help'>here</a>.
+        </div>
+    </div>
+</body>
+
+</html>

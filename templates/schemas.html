@@ -1,0 +1,14 @@
+{% extends "base.html" %} 
+{% block breadcrumb %}<div class="breadcrumb"><a href="../">Databases&nbsp;&nbsp;</a> | &nbsp;&nbsp;{{database}}</div>{% end %}
+{% block maintable %}
+	{% if schemas %}
+		<table class="table" cellspacing="0">
+			<tr><th style="width: 15%">Schema</th><th>Description</th></tr>
+			{% for schema in schemas %}
+				<tr><td><a href="{{schema['name']}}/">{{schema['name']}}</a></td><td>{{schema['description']}}</td></tr>
+			{% end %}
+		</table>
+	{% end %}
+{% end %}
+
+

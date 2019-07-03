@@ -1,3 +1,9 @@
+CREATE EXTENSION IF NOT EXISTS postgis;
+CREATE DATABASE pythonrestserver WITH TEMPLATE = template0 ENCODING = 'UTF8';
+ALTER DATABASE pythonrestserver OWNER TO jrc;
+
+\connect pythonrestserver
+
 CREATE SCHEMA utils AUTHORIZATION jrc;
 CREATE OR REPLACE FUNCTION utils.dopa_rest_getschemas()
   RETURNS TABLE(schema character varying, description character varying) AS

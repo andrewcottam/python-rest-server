@@ -1,0 +1,97 @@
+{% extends "base.html" %} 
+{% block breadcrumb %}<div class="breadcrumb"><a href="../../../">Databases&nbsp;&nbsp;</a> | &nbsp;&nbsp;<a href="../../">{{database}}&nbsp;&nbsp;</a> | &nbsp;&nbsp;<a href="../">{{schemaname}}</a> | &nbsp;&nbsp;{{servicename}}</div>{% end %}
+{% block maintable %}
+	{% if servicename %}
+		<div class="section">
+			<div class="sName">{{servicename}} &nbsp;Service</div>
+			<div class="sectionHeader">Description:</div><div class="normal">{{servicedesc}}</div>
+		</div>
+
+		<!--Input parameters-->
+		<div class="section">
+			<div class="sectionHeader">Input parameters:</div>
+			<table class="table2" cellspacing="0">
+			{% if inparams %}
+				<tr><th>Name</th><th>Description</th><th>Type</th><th>Default value</th></tr>
+				{% for inparam in inparams %}
+					{% if inparam['default']=='' %}
+						<tr><td>{{inparam['name']}}</td><td>{{inparam['description']}}</td><td>{{inparam['type']}}</td><td>{{inparam['default']}}</td></tr>
+					{% else %}
+						<tr><td><i>{{inparam['name']}}</i></td><td>{{inparam['description']}}(optional)</td><td>{{inparam['type']}}</td><td>{{inparam['default']}}</td></tr>
+					{% end %}
+				{% end %}
+			{% else %}
+				<tr><td colspan="4">No mandatory input parameters</td></tr>
+			{% end %}
+			</table>
+			<div class="normal">The standard optional parameters are not shown (see the <a href='help.html' target='_help'>Help</a> Documentation for more information)</div>
+		</div>
+
+		<!--Output parameters-->
+		<div class="section">
+			<div class="sectionHeader">Output Parameters:</div>
+			<table class="table2" cellspacing="0">
+			{% if outparams %}
+				<tr><th>Name</th><th>Description</th><th>Type</th></tr>
+				{% for outparam in outparams %}
+					<tr><td>{{outparam['name']}}</td><td>{{outparam['description']}}</td><td>{{outparam['type']}}</td></tr>
+				{% end %}
+			{% else %}
+				<tr><td colspan="3">No output parameters</td></tr>
+			{% end %}
+			</table>
+		</div>
+
+		<!--Example calls-->
+		<div class="section"><div class="sectionHeader">Example calls:</div>
+			
+		{% set querystring = "?" %}
+		{% set mandatoryquerystring = "?" %}
+		{% if inparams %}
+			{% set queryparams = [] %}
+			{# build the mandatory parameters for the query string #}
+			{% set getqueryparams([p for p in inparams if (p['default']== '')], queryparams) %}
+			{% set mandatoryquerystring = "?" + "&".join([param for param in queryparams]) %}
+			{# build the optional parameters for the query string #}
+			{% set getqueryparams([p for p in inparams if (p['default']!= '')], queryparams) %}
+			{% set querystring = "?" + "&".join([param for param in queryparams]) %}
+		{% end %}
+
+		<!--Mandatory parameters example calls-->
+		<div class="endPointExample">REST call using mandatory parameters</div>
+		{% if mandatoryquerystring!='?' %}
+			<div class="endpoint"><a href='../{{servicename}}{{mandatoryquerystring}}' target='__examplecall' title="Example call" class="example">{{mandatoryquerystring}}</a></div>
+		{% else %}
+			<div>No mandatory input parameters</div>
+		{% end %}
+		
+		<!--Optional parameters example calls-->
+		<div class="endPointExample">REST call using optional parameters</div>
+		{% if len(mandatoryquerystring)!=len(querystring) %}
+			<div class="endpoint"><a href='../{{servicename}}{{querystring}}' target='__examplecall' title="Example call" class="example">{{querystring}}</a></div>
+		{% end %}
+		{% if querystring!='?' %} 
+			{% set prefix = querystring + '&' %}
+		{% else %}
+			{% set prefix = querystring %}
+		{% end %}
+		<div class="endpoint"><a href='../{{servicename}}{{prefix}}format=xml' target='__examplecall' title="Example call" class="example">{{prefix}}format=xml</a></div>
+		<div class="endpoint"><a href='../{{servicename}}{{prefix}}format=array&includemetadata=false' target='__examplecall' title="Example call" class="example">{{prefix}}format=array&includemetadata=false</a></div>
+		{% if (len(outparams)>0) %}
+			<div class="endpoint"><a href='../{{servicename}}{{prefix}}format=pdf&sortfield={{outparams[0]["name"]}}' target='__examplecall' title="Example call" class="example">{{prefix}}format=pdf&sortfield={{outparams[0]['name']}}</a></div>
+			<div class="endpoint"><a href='../{{servicename}}{{prefix}}format=json&fields={{outparams[0]["name"]}}' target='__examplecall' title="Example call" class="example">{{prefix}}format=json&fields={{outparams[0]['name']}}</a></div>
+		{% end %}
+
+		<!--Excel endpoint-->
+		<div class="endPointExample">Excel endpoint</div>
+		{% if mandatoryquerystring!='?' %}
+			<div class="endpoint"><a href='../{{servicename}}{{mandatoryquerystring}}&format=xml' target='__examplecall' title="Example call" class="example">{{mandatoryquerystring}}&format=xml</a></div>
+		{% else %}
+			<div class="endpoint"><a href='../{{servicename}}{{mandatoryquerystring}}format=xml' target='__examplecall' title="Example call" class="example">{{mandatoryquerystring}}format=xml</a></div>
+		{% end %}
+		</div>
+		
+	{% end %}
+{% end %}
+
+
