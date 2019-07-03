@@ -103,7 +103,7 @@ def _setGlobalVariables():
     THIS_FOLDER = os.path.dirname(os.path.realpath(__file__)) + os.sep
     #initialise colorama to be able to show log messages on windows in color
     colorama.init()
-    PORT = "8080"
+    PORT = "8081"
     CERTFILE = "None"
     KEYFILE = "None"
     #OUTPUT THE INFORMATION ABOUT THE MARXAN-SERVER SOFTWARE
@@ -347,7 +347,11 @@ class callservice(PythonRESTHandler):
             if len(floatColumns) > 0:
                 for floatColumn in floatColumns:
                     for row in rows:
-                        if type(row[floatColumn]) != NoneType:  # check that the data is not null
+                        print (row)
+                        print (floatColumn)
+                        print (row[floatColumn])
+                        print (type(row[floatColumn]))
+                        if type(row[floatColumn]) != None:  # check that the data is not null
                             row[floatColumn] = round(row[floatColumn], int(decimalPlaceLimit))
                             
             # return the data
@@ -432,7 +436,7 @@ class callservice(PythonRESTHandler):
                 
         
         except (DopaServicesError, ProgrammingError, OperationalError):
-            web.header("Content-Type", "text/html")
+            self.set_header('Content-Type',"text/html")
             return "DOPA Services Error: " + str(sys.exc_info())
 
 def make_app():
