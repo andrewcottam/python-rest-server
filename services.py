@@ -11,13 +11,14 @@ from psycopg2 import ProgrammingError, OperationalError
 from resources import dbconnect, databases, documentRoot, title
 from tornado.web import StaticFileHandler 
 from resources import dbconnect, twilio, amazon_ses
+from decimal import Decimal
 # from twilio.rest import TwilioRestClient
 # from amazon_ses import AmazonSES, EmailMessage, AmazonError
 
 #=====================  CONSTANTS  ==================================================================================================================================================================================================================
 
-WEBPY_COOKIE_NAME = "webpy_session_id"
 PYTHON_REST_SERVER_VERSION = "0.1"
+PORT = "8080"
 
 #=====================  CUSTOM CLASSES  ==================================================================================================================================================================================================================
 
@@ -81,6 +82,14 @@ def getservicedescription(fulldescription):
     else:
         return fulldescription
 
+def isNumeric(val):
+    try:
+        i = float(val)
+    except (ValueError, TypeError):
+        return False
+    else:
+        return True
+        
 def isVisibleServiceName(servicename):
     if (servicename[:3] in ['get', 'set']) | (servicename[:6] in ['update', 'insert', 'delete']) | ((servicename[:4] in ['_get', '_set'])) | ((servicename[:7] in ['_update', '_insert', '_delete'])):  
         return True
@@ -95,7 +104,6 @@ def isValidServiceName(servicename):
 
 #run when the server starts to set all of the global path variables
 def _setGlobalVariables():
-    global PORT
     global CERTFILE
     global KEYFILE
     global PYTHON_REST_SERVER_VERSION
@@ -103,7 +111,6 @@ def _setGlobalVariables():
     THIS_FOLDER = os.path.dirname(os.path.realpath(__file__)) + os.sep
     #initialise colorama to be able to show log messages on windows in color
     colorama.init()
-    PORT = "8081"
     CERTFILE = "None"
     KEYFILE = "None"
     #OUTPUT THE INFORMATION ABOUT THE MARXAN-SERVER SOFTWARE
@@ -118,12 +125,13 @@ def _setGlobalVariables():
     else:
         print(" SSL certificate file:\tNone")
         testUrl = "http://"
-    testUrl = testUrl + "<host>:" + PORT + "/python-rest-server/testTornado"
+    testUrl = testUrl + "<host>:" + PORT + "/python-rest-server/"
     if KEYFILE != "None":
         print(" Private key file:\t" + KEYFILE)
     print(" Python executable:\t" + sys.executable)
     print("\x1b[1;32;48mStarted at " + datetime.datetime.now().strftime("%d/%m/%y %H:%M:%S") + "\x1b[0m")
-    print("\x1b[1;32;48m\nTo test python-rest-server goto " + testUrl + "\x1b[0m")
+    print("\x1b[1;32;48m\nTo test the python-rest-server go to " + testUrl + "testTornado\x1b[0m")
+    print("\x1b[1;32;48mTo go to the REST Services Home Page go to " + testUrl + "\x1b[0m")
         
 class PythonRESTHandler(tornado.web.RequestHandler):
     #used by all descendent classes to write the return payload and send it
@@ -167,7 +175,7 @@ class getdatabases(PythonRESTHandler):
             self.render("templates/databases.html", items=databases, relativepath="")            
         
         except (DopaServicesError, ProgrammingError, OperationalError):
-            web.header("Content-Type", "text/html")
+            self.set_header("Content-Type", "text/html")
             return "DOPA Services Error: " + str(sys.exc_info())        
 
 class getschemas(PythonRESTHandler):
@@ -180,7 +188,7 @@ class getschemas(PythonRESTHandler):
             self.render("templates/schemas.html", database=database, schemas=schemasdict, relativepath="../")            
         
         except (DopaServicesError, ProgrammingError, OperationalError):
-            web.header("Content-Type", "text/html")
+            self.set_header("Content-Type", "text/html")
             return "DOPA Services Error: " + str(sys.exc_info())        
 
 class getservices(PythonRESTHandler):
@@ -193,7 +201,7 @@ class getservices(PythonRESTHandler):
             self.render("templates/services.html", database=database, schemaname=schema, services=servicesdict, relativepath="../../")            
         
         except (DopaServicesError, ProgrammingError, OperationalError):
-            web.header("Content-Type", "text/html")
+            self.set_header("Content-Type", "text/html")
             return "DOPA Services Error: " + str(sys.exc_info())        
 
 class getservice(PythonRESTHandler):
@@ -244,7 +252,7 @@ class getservice(PythonRESTHandler):
             self.render("templates/service.html", database=database, schemaname=schema, servicename=service, servicedesc=getservicedescription(params[0][1]), inparams=[p for p in paramsdict if (p['mode'] == 'IN')], outparams=[p for p in paramsdict if (p['mode'] == 'OUT')], relativepath="../../../")         
         
         except (DopaServicesError, ProgrammingError, OperationalError):
-            web.header("Content-Type", "text/html")
+            self.set_header("Content-Type", "text/html")
             return "DOPA Services Error: " + str(sys.exc_info())
 
 class callservice(PythonRESTHandler):
@@ -277,7 +285,7 @@ class callservice(PythonRESTHandler):
                 del(params['callback'])
             # check if the service name is valid
             if not (isValidServiceName(service)):
-                raise RESTServicesError('Invalid service')
+                raise DopaServicesError('Invalid service')
         
             # PARSE AND CONVERT THE DATA TYPES OF THE OTHER INPUT PARAMETERS
             # get all the parameters for the function from postgresql
@@ -303,7 +311,7 @@ class callservice(PythonRESTHandler):
                 # check that all parameters are correct
                 invalidparamnames = [n for n in list(params.keys()) if n not in functionparamnames]
                 if invalidparamnames and parseparams == 'true':
-                    raise RESTServicesError('Invalid parameters: ' + ",".join(invalidparamnames))
+                    raise DopaServicesError('Invalid parameters: ' + ",".join(invalidparamnames))
                 # put the input parameters in the right order 
                 params = OrderedDict([(n, params[n]) for n in functionparamnames if n in list(params.keys())])
             
@@ -338,7 +346,7 @@ class callservice(PythonRESTHandler):
             fieldcount = len(fields)
             fieldsdict = [dict([("name", d.name), ("type", gettypefromtypecode(d.type_code))]) for d in conn.cur.description if (d.name in fields)]
             if len(fieldsdict) != len(fields):
-                raise RESTServicesError('Invalid output fields')
+                raise DopaServicesError('Invalid output fields')
             metadatadict = OrderedDict([("duration", str(t2 - t1)), ("error", None), ("idProperty", conn.cur.description[0].name), ("successProperty", 'success'), ("totalProperty", 'recordCount'), ("success", True), ("recordCount", int(conn.cur.rowcount)), ("root", rootName), ("fields", fieldsdict)])    
             
             # RECORDS SECTION OF THE RESPONSE
@@ -347,10 +355,6 @@ class callservice(PythonRESTHandler):
             if len(floatColumns) > 0:
                 for floatColumn in floatColumns:
                     for row in rows:
-                        print (row)
-                        print (floatColumn)
-                        print (row[floatColumn])
-                        print (type(row[floatColumn]))
                         if type(row[floatColumn]) != None:  # check that the data is not null
                             row[floatColumn] = round(row[floatColumn], int(decimalPlaceLimit))
                             
@@ -432,7 +436,7 @@ class callservice(PythonRESTHandler):
                 self.write(output)
             
             else:
-                raise RESTServicesError('Invalid response format: ' + format)
+                raise DopaServicesError('Invalid response format: ' + format)
                 
         
         except (DopaServicesError, ProgrammingError, OperationalError):
@@ -450,9 +454,12 @@ def make_app():
         ("/python-rest-server/images/(.*)", StaticFileHandler, {"path": THIS_FOLDER + os.sep + "images" + os.sep}),
         ("/python-rest-server/styles/(.*)", StaticFileHandler, {"path": THIS_FOLDER + os.sep + "styles" + os.sep}),
         ("/python-rest-server/(.*)", StaticFileHandler, {"path": THIS_FOLDER + os.sep}),
+        ("/web_apps/(.*)", StaticFileHandler, {"path": "/home/ubuntu/environment/web_apps/"}), #this is only needed on my AWS C9 development server to point static web apps to the right place
     ], websocket_ping_timeout=30, websocket_ping_interval=29, ui_methods=ui_methods)
 
 if __name__ == "__main__":
+    if len(sys.argv)>1: # the port can be passed as a run
+        PORT = sys.argv[1]
     #turn on tornado logging 
     tornado.options.parse_command_line() 
     # create an instance of tornado formatter
