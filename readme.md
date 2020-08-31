@@ -7,12 +7,12 @@ git clone https://github.com/andrewcottam/python-rest-server.git
 ```
 ## Create the database and database objects  
 ```
-sudo -u postgres psql -f /home/ubuntu/environment/python-rest-server/scripts/database_objects.sql 
+sudo -u postgres psql -f <path>/python-rest-server/scripts/database_objects.sql 
 ```
 ## Start the server
 This starts the server listening on port 8081:  
 ```
-python /home/ubuntu/environment/python-rest-server/services.py 8081  
+python <path>/python-rest-server/services.py 8081  
 ```
 ## Navigate to the server services directory
 http://localhost:8081/python-rest-server/
